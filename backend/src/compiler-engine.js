@@ -195,10 +195,18 @@ function lexicalAnalysis(code) {
     if (/[a-zA-Z_]/.test(code[i])) {
       let value = "";
       while (i < length && /[a-zA-Z0-9_]/.test(code[i])) { value += code[i]; i++; }
+      const normalized = value.toLowerCase();
       let type = TOKEN_TYPES.IDENTIFIER;
-      if (DATATYPES.includes(value))               type = TOKEN_TYPES.DATATYPE;
-      else if (value === "true" || value === "false") type = TOKEN_TYPES.BOOLEAN_LITERAL;
-      else if (KEYWORDS[value])                    type = KEYWORDS[value];
+      if (DATATYPES.includes(normalized)) {
+        type = TOKEN_TYPES.DATATYPE;
+        value = normalized;
+      } else if (normalized === "true" || normalized === "false") {
+        type = TOKEN_TYPES.BOOLEAN_LITERAL;
+        value = normalized;
+      } else if (KEYWORDS[normalized]) {
+        type = KEYWORDS[normalized];
+        value = normalized;
+      }
       tokens.push({ value, type, position: i });
       continue;
     }
@@ -445,12 +453,16 @@ function syntaxAnalysis(tokens) {
 
   // DATATYPE id := expr!
   if (t0 === TOKEN_TYPES.DATATYPE) {
-    const expected = "[DATATYPE] [ID] := [EXPR] !";
-    if (tokens.length < 5) { errors.push("Incomplete assignment"); return { isValid:false, expected, found, errors }; }
+    const expected = "[DATATYPE] [ID] ! OR [DATATYPE] [ID] := [EXPR] !";
+    if (tokens.length < 3) { errors.push("Incomplete declaration"); return { isValid:false, expected, found, errors }; }
     if (tokens[1].type !== TOKEN_TYPES.IDENTIFIER) errors.push("Expected identifier after datatype");
-    if (tokens[2].type !== TOKEN_TYPES.ASSIGN_OPERATOR)
-      errors.push("Expected :=");
     if (tokens[tokens.length-1].type !== TOKEN_TYPES.DELIMITER) errors.push("Expected !");
+
+    const isBareDeclaration = tokens.length === 3;
+    if (!isBareDeclaration && tokens[2].type !== TOKEN_TYPES.ASSIGN_OPERATOR) {
+      errors.push("Expected := for initialized declaration");
+    }
+
     return { isValid: errors.length === 0, expected, found, errors };
   }
 
@@ -733,10 +745,11 @@ function semanticAnalysis(tokens, context) {
   }
 
   // ── DATATYPE id := expr! ──────────────────────────────────────────────────
-  if (t0 === TOKEN_TYPES.DATATYPE && tokens.length >= 5) {
+  if (t0 === TOKEN_TYPES.DATATYPE && tokens.length >= 3) {
     const datatype   = tokens[0].value;
     const identifier = tokens[1].value;
-    const exprTokens = tokens.slice(3, -1);
+    const isBareDeclaration = tokens.length === 3;
+    const exprTokens = isBareDeclaration ? [] : tokens.slice(3, -1);
 
     const existing = newSymbolTable.find(
       (e) => e.variable === identifier && e.scopeLevel === currentScope,
@@ -750,7 +763,14 @@ function semanticAnalysis(tokens, context) {
     let boundValue = "";
     let isCompatible = false;
 
-    if (NUMERIC_TYPES.has(datatype)) {
+    if (isBareDeclaration) {
+      if (datatype === "bone" || datatype === "paw" || datatype === "tail") boundValue = "0";
+      else if (datatype === "woof") boundValue = "false";
+      else boundValue = "";
+      isCompatible = true;
+    }
+
+    if (!isBareDeclaration && NUMERIC_TYPES.has(datatype)) {
       const numEval = evaluateNumericExpression(exprTokens, newSymbolTable, currentScope);
       if (numEval.error) { errors.push(numEval.error); }
       else {
@@ -759,11 +779,11 @@ function semanticAnalysis(tokens, context) {
           errors.push(`Type mismatch: bone expects integer, got ${numEval.value}`);
         else { isCompatible = true; boundValue = String(numEval.value); }
       }
-    } else if (BOOL_TYPES.has(datatype)) {
+    } else if (!isBareDeclaration && BOOL_TYPES.has(datatype)) {
       const exprToken = exprTokens[0];
       if (exprToken?.type === TOKEN_TYPES.BOOLEAN_LITERAL) { isCompatible = true; boundValue = exprToken.value; }
       else { errors.push(`Type mismatch: woof expects boolean literal`); }
-    } else if (STRING_TYPES.has(datatype)) {
+    } else if (!isBareDeclaration && STRING_TYPES.has(datatype)) {
       const exprToken = exprTokens[0];
       if (exprToken?.type === TOKEN_TYPES.STRING_LITERAL) { isCompatible = true; boundValue = exprToken.value.replace(/^"|"$/g,""); }
       else { errors.push(`Type mismatch: fur expects string literal`); }
