@@ -1,0 +1,222 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* ── Light mode ── */
+  --background: 35 100% 94%;
+  --foreground: 225 21% 19%;
+  --card: 0 0% 100%;
+  --card-foreground: 225 21% 19%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 225 21% 19%;
+  --primary: 36 76% 59%;         /* #E6A84A */
+  --primary-foreground: 25 55% 12%;
+  --secondary: 35 62% 90%;
+  --secondary-foreground: 225 21% 19%;
+  --muted: 35 50% 91%;
+  --muted-foreground: 225 12% 40%;
+  --accent: 35 62% 90%;
+  --accent-foreground: 225 21% 19%;
+  --destructive: 0 100% 71%;     /* #FF6B6B */
+  --border: 35 30% 84%;
+  --input: 35 30% 84%;
+  --ring: 36 76% 59%;
+  --radius: 0.75rem;
+  --golden-main: #E6A84A;
+  --golden-deep: #C98A2E;
+
+  /* ── Editor (light) ── */
+  --editor-bg:           #ffffff;
+  --editor-text:         #000000;
+  --editor-line-bg:      #f5f5f5;
+  --editor-line-border:  #e5e7eb;
+  --editor-line-color:   #aaaaaa;
+  --editor-caret:        #E6A84A;
+  --editor-placeholder:  #9ca3af;
+
+  /* ── Syntax tokens (light) ── */
+  --tok-kw:  #0070BB;
+  --tok-str: #A31515;
+  --tok-num: #098658;
+  --tok-cmt: #008000;
+  --tok-op:  #795E26;
+  --tok-dlm: #C98A2E;
+}
+
+.dark {
+  /* ── Dark mode ── */
+  --background: 226 24% 15%;    /* #1E2330 */
+  --foreground: 0 0% 83%;       /* #D4D4D4 */
+  --card: 226 22% 19%;          /* #252B3B */
+  --card-foreground: 0 0% 83%;
+  --popover: 226 22% 19%;
+  --popover-foreground: 0 0% 83%;
+  --primary: 36 76% 59%;         /* #E6A84A */
+  --primary-foreground: 25 55% 12%;
+  --secondary: 226 16% 24%;
+  --secondary-foreground: 0 0% 83%;
+  --muted: 226 16% 24%;
+  --muted-foreground: 0 0% 52%;
+  --accent: 226 16% 24%;
+  --accent-foreground: 0 0% 83%;
+  --destructive: 0 100% 71%;     /* #FF6B6B */
+  --border: 226 16% 28%;
+  --input: 226 16% 22%;
+  --ring: 36 76% 59%;
+  --golden-main: #E6A84A;
+  --golden-deep: #C98A2E;
+
+  /* ── Editor (dark) ── */
+  --editor-bg:           #1e1e2f;
+  --editor-text:         #d4d4d4;
+  --editor-line-bg:      #252535;
+  --editor-line-border:  #2d2d3f;
+  --editor-line-color:   #858585;
+  --editor-caret:        #E6A84A;
+  --editor-placeholder:  #4a4a6a;
+
+  /* ── Syntax tokens (dark) ── */
+  --tok-kw:  #569CD6;
+  --tok-str: #CE9178;
+  --tok-num: #B5CEA8;
+  --tok-cmt: #6A9955;
+  --tok-op:  #9CDCFE;
+  --tok-dlm: #DCDCAA;
+}
+
+* {
+  @apply border-border;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+}
+
+/* ── Syntax highlight token spans ── */
+.tok-kw  { color: var(--tok-kw);  font-weight: 600; }
+.tok-str { color: var(--tok-str); }
+.tok-num { color: var(--tok-num); }
+.tok-cmt { color: var(--tok-cmt); font-style: italic; }
+.tok-op  { color: var(--tok-op);  }
+.tok-dlm { color: var(--tok-dlm); font-weight: 700; }
+
+/* ── Code editor overlay ── */
+.code-editor-wrap {
+  background: var(--editor-bg);
+}
+
+.code-line-nums {
+  background: var(--editor-line-bg);
+  border-right: 1px solid var(--editor-line-border);
+  color: var(--editor-line-color);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.code-line-nums::-webkit-scrollbar { display: none; }
+
+.code-pre { color: var(--editor-text); }
+
+.code-textarea {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  caret-color: var(--editor-caret);
+  background: transparent;
+  text-shadow: 0 0 0 transparent;
+}
+.code-textarea::placeholder {
+  color: var(--editor-placeholder) !important;
+  -webkit-text-fill-color: var(--editor-placeholder) !important;
+}
+
+.code-textarea:focus {
+  box-shadow: inset 0 0 0 1px rgb(230 168 74 / 0.25), inset 0 0 35px rgb(230 168 74 / 0.06);
+}
+
+.code-textarea::selection {
+  background: rgb(230 168 74 / 0.35);
+}
+
+.treat-badge {
+  border-color: rgb(230 168 74 / 0.35);
+  background: linear-gradient(135deg, rgb(230 168 74 / 0.2), rgb(201 138 46 / 0.2));
+  color: rgb(246 222 188);
+  border-radius: 999px;
+}
+
+.treat-badge:hover {
+  animation: treat-bounce 250ms ease;
+}
+
+.wag-hover:hover {
+  animation: wag 260ms ease-in-out;
+}
+
+.confused-shake {
+  animation: confused-shake 220ms ease-in-out;
+}
+
+.paw-pop {
+  position: absolute;
+  opacity: 0;
+  color: rgb(230 168 74 / 0.7);
+  font-size: 10px;
+  animation: paw-pop 900ms ease-out forwards;
+}
+
+.paw-pop-1 {
+  right: 18px;
+  top: 8px;
+}
+
+.paw-pop-2 {
+  right: 34px;
+  top: 18px;
+  animation-delay: 120ms;
+}
+
+.paw-pop-3 {
+  right: 50px;
+  top: 10px;
+  animation-delay: 220ms;
+}
+
+@keyframes wag {
+  0% { transform: translateX(0); }
+  30% { transform: translateX(-1px); }
+  60% { transform: translateX(1px); }
+  100% { transform: translateX(0); }
+}
+
+@keyframes treat-bounce {
+  0% { transform: translateY(0); }
+  40% { transform: translateY(-2px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes confused-shake {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  50% { transform: translateX(2px); }
+  75% { transform: translateX(-1px); }
+  100% { transform: translateX(0); }
+}
+
+@keyframes paw-pop {
+  0% { opacity: 0; transform: translateY(8px) scale(0.8); }
+  35% { opacity: 0.8; }
+  100% { opacity: 0; transform: translateY(-8px) scale(1); }
+}
+
+/* ── Custom scrollbar ── */
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: hsl(var(--border)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.4); }
