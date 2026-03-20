@@ -1,11 +1,28 @@
 import type { KeyboardEvent } from 'react';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { io, type Socket } from 'socket.io-client';
 import { Card } from './components/card';
 import { Button } from './components/button';
-import { Badge } from './components/badge';
 import { CheatSheetPanel } from './components/cheat-sheet-panel';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/table';
-import { Play, Trash2, Sun, Moon, Loader2, PawPrint, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import {
+  Play,
+  Trash2,
+  Sun,
+  Moon,
+  Loader2,
+  PawPrint,
+  PanelRightClose,
+  PanelRightOpen,
+  TerminalSquare,
+  AlertTriangle,
+  Activity,
+  Rows3,
+  FileCode2,
+  BookOpenText,
+  Sparkles,
+  SlidersHorizontal,
+} from 'lucide-react';
 import type { MultiLineCompilerResult } from './types/compiler';
 import { cn } from './components/utils';
 
@@ -16,25 +33,25 @@ type SymbolRow = { name: string; type: string; levelScope: string; offset: numbe
 // ── Constants ─────────────────────────────────────────────
 const EXAMPLE_SNIPPETS = {
   basicProgram: [
-    'bone number := 10 !',
-    'bone total := number + 5 !',
-    'arf "Total is: " + total !',
+    'bone number := 10!',
+    'bone total := number + 5!',
+    'arf "Total is: " + total!',
   ].join('\n'),
   inputOutput: [
-    'fur username := "guest" !',
-    'sniff username !',
-    'arf "Hello, " + username !',
+    'fur username!',
+    'sniff username!',
+    'arf "Hello, " + username!',
   ].join('\n'),
   scopedProgram: [
-    'bone x := 5 !',
+    'bone x := 5!',
     'sit ( x > 3 ) {',
-    '  bone y := x + 2 !',
-    '  arf "Inner: " + y !',
+    '  bone y := x + 2!',
+    '  arf "Inner: " + y!',
     '}',
-    'arf "Outer: " + x !',
+    'arf "Outer: " + x!',
   ].join('\n'),
   ifElseProgram: [
-    'bone score := 85 !',
+    'bone score := 85!',
     'sit ( score >= 75 ) {',
     '  arf "Pass" !',
     '} stay {',
@@ -164,12 +181,42 @@ function CompileMascot({ state }: { state: MascotState }) {
 function CodeEditor({ value, onChange, onRunCompiler, errorLines, editorRef }: CodeEditorProps) {
   const preRef     = useRef<HTMLPreElement>(null);
   const lineNumRef = useRef<HTMLDivElement>(null);
+  const [activeLine, setActiveLine] = useState(1);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [lineMetrics, setLineMetrics] = useState({ lineHeight: 24, paddingTop: 12 });
+
+  const updateCaretLine = useCallback((element: HTMLTextAreaElement) => {
+    const cursor = element.selectionStart;
+    const line = element.value.slice(0, cursor).split('\n').length;
+    setActiveLine(line);
+  }, []);
+
+  useEffect(() => {
+    const ta = editorRef.current;
+    if (!ta) return;
+    const cursor = ta.selectionStart;
+    const line = value.slice(0, cursor).split('\n').length;
+    setActiveLine(line);
+  }, [value, editorRef]);
+
+  useEffect(() => {
+    const ta = editorRef.current;
+    if (!ta) return;
+    const styles = window.getComputedStyle(ta);
+    const parsedLineHeight = Number.parseFloat(styles.lineHeight);
+    const parsedPaddingTop = Number.parseFloat(styles.paddingTop);
+    setLineMetrics({
+      lineHeight: Number.isFinite(parsedLineHeight) ? parsedLineHeight : 24,
+      paddingTop: Number.isFinite(parsedPaddingTop) ? parsedPaddingTop : 12,
+    });
+  }, [editorRef]);
 
   const syncScroll = () => {
     const ta = editorRef.current;
     if (!ta) return;  
     if (preRef.current)     { preRef.current.scrollTop = ta.scrollTop; preRef.current.scrollLeft = ta.scrollLeft; }
     if (lineNumRef.current) { lineNumRef.current.scrollTop = ta.scrollTop; }
+    setScrollTop(ta.scrollTop);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -184,13 +231,13 @@ function CodeEditor({ value, onChange, onRunCompiler, errorLines, editorRef }: C
     }
   };
 
-  const lineCount  = Math.max(value.split('\n').length, 30);
+  const lineCount  = Math.max(value.split('\n').length, 28);
   const highlighted = useMemo(() => buildHighlightedHtml(value), [value]);
 
   return (
-    <div className={cn('code-editor-wrap flex h-full min-h-[460px] overflow-hidden font-mono text-sm leading-6 rounded-b-xl', !value.trim() && 'is-empty')}>
+    <div className={cn('code-editor-wrap flex h-full min-h-[360px] overflow-hidden font-mono text-sm leading-6 rounded-b-2xl', !value.trim() && 'is-empty')}>
       {/* Line numbers */}
-      <div ref={lineNumRef} className="code-line-nums flex-none w-11 overflow-hidden select-none text-right pt-3 pr-3 pl-2 text-xs">
+      <div ref={lineNumRef} className="code-line-nums flex-none w-12 overflow-hidden select-none text-right pt-3 pr-3 pl-2 text-xs">
         {Array.from({ length: lineCount }, (_, i) => (
           <div key={i} className={cn('leading-6', errorLines.has(i + 1) ? 'text-[#FF4C4C] font-bold' : '')}>
             {i + 1}
@@ -199,12 +246,20 @@ function CodeEditor({ value, onChange, onRunCompiler, errorLines, editorRef }: C
       </div>
       {/* Highlighted overlay + textarea */}
       <div className="relative flex-1 overflow-hidden">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute left-0 right-0 z-[0] h-6 bg-[linear-gradient(90deg,rgba(230,168,74,0.16),rgba(230,168,74,0.04),transparent)]"
+          style={{
+            top: `${lineMetrics.paddingTop + (activeLine - 1) * lineMetrics.lineHeight - scrollTop}px`,
+            height: `${lineMetrics.lineHeight}px`,
+          }}
+        />
         {!value.trim() && (
           <PawPrint className="pointer-events-none absolute bottom-4 right-5 z-0 size-20 text-[color:var(--editor-placeholder)] opacity-[0.08]" aria-hidden />
         )}
         <pre
           ref={preRef}
-          className="code-pre absolute inset-0 z-[1] m-0 overflow-hidden whitespace-pre-wrap break-words pointer-events-none pt-3 px-3 pb-3 leading-6 text-sm font-mono"
+          className="code-pre absolute inset-0 z-[1] m-0 overflow-hidden whitespace-pre pointer-events-none pt-3 px-3 pb-3 leading-6 text-sm font-mono"
           // eslint-disable-next-line react/no-danger
           dangerouslySetInnerHTML={{ __html: highlighted + '\n' }}
           aria-hidden
@@ -212,10 +267,17 @@ function CodeEditor({ value, onChange, onRunCompiler, errorLines, editorRef }: C
         <textarea
           ref={editorRef}
           value={value}
-          onChange={e => onChange(e.target.value)}
+          onChange={(e) => {
+            onChange(e.target.value);
+            updateCaretLine(e.currentTarget);
+          }}
           onKeyDown={handleKeyDown}
+          onClick={(event) => updateCaretLine(event.currentTarget)}
+          onKeyUp={(event) => updateCaretLine(event.currentTarget)}
+          onSelect={(event) => updateCaretLine(event.currentTarget)}
           onScroll={syncScroll}
           spellCheck={false}
+          wrap="off"
           placeholder="// Write your Retriever code here...  e.g. Fur name := &quot;Buddy&quot;!"
           className="code-textarea absolute inset-0 z-10 w-full h-full resize-none overflow-auto pt-3 px-3 pb-3 outline-none border-0 leading-6 text-sm font-mono"
         />
@@ -255,21 +317,43 @@ function buildSymbolRows(entries: CompilerSymbol[]): SymbolRow[] {
   });
 }
 
+function buildAnalyzerStageSummary(results: MultiLineCompilerResult) {
+  const hasLexicalErrors = results.lines.some((line) => line.result.lexer.errors.length > 0);
+  const hasParserErrors = results.lines.some((line) => line.result.syntax.errors.length > 0);
+  const hasSemanticErrors = results.lines.some((line) => line.result.semantic.errors.length > 0);
+
+  const errors: string[] = [];
+  if (hasLexicalErrors) {
+    errors.push('Lexer says: BadDogError: Lexical error found. Compilation failed.');
+  }
+  if (hasParserErrors) {
+    errors.push('Parser says: BadDogError: Syntax error found. Compilation failed.');
+  }
+  if (hasSemanticErrors) {
+    errors.push('Semantic Analyzer says: BadDogError: Semantic error found. Compilation failed.');
+  }
+
+  return errors;
+}
+
 // ── App ───────────────────────────────────────────────────
 export default function App() {
   const [code, setCode]               = useState('');
   const [runtimeInputMap, setRuntimeInputMap] = useState<Record<string, string>>({});
   const [consoleInputText, setConsoleInputText] = useState('');
   const [pendingSniffVar, setPendingSniffVar] = useState<string | null>(null);
+  const [pendingSniffRequestId, setPendingSniffRequestId] = useState<string | null>(null);
   const [pendingSniffPrompt, setPendingSniffPrompt] = useState('');
   const [lastInputEcho, setLastInputEcho] = useState<{ prompt: string; value: string } | null>(null);
   const [result, setResult]           = useState<MultiLineCompilerResult | null>(null);
   const [isRunning, setIsRunning]     = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [isDark, setIsDark]           = useState(() => localStorage.getItem('theme') === 'dark');
-  const [activeOutputTab, setActiveOutputTab] = useState<'output' | 'errors' | 'logs'>('output');
+  const [activeOutputTab, setActiveOutputTab] = useState<'output' | 'errors' | 'symbols' | 'logs'>('output');
   const [isGuideOpen, setIsGuideOpen] = useState(true);
+  const [outputHeight, setOutputHeight] = useState(248);
   const editorRef                     = useRef<HTMLTextAreaElement>(null);
+  const socketRef                     = useRef<Socket | null>(null);
 
   // Apply / persist dark class
   useEffect(() => {
@@ -277,68 +361,88 @@ export default function App() {
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
-  const detectSniffRequest = useCallback((compileResult: MultiLineCompilerResult) => {
-    const missingInputMessage = compileResult.lines
-      .flatMap((line) => line.result.semantic.errors)
-      .find((msg) => /No input provided for '\w+'/i.test(msg));
+  useEffect(() => {
+    const socket = io();
+    socketRef.current = socket;
 
-    if (!missingInputMessage) return null;
-    const match = missingInputMessage.match(/No input provided for '(\w+)'/i);
-    if (!match) return null;
+    socket.on('request-input', (payload: { name?: string; requestId?: string }) => {
+      const variableName = typeof payload?.name === 'string' ? payload.name : '';
+      if (!variableName) return;
 
-    return match[1];
+      setPendingSniffVar(variableName);
+      setPendingSniffRequestId(typeof payload?.requestId === 'string' ? payload.requestId : null);
+      setPendingSniffPrompt(`enter ${variableName}:`);
+      setActiveOutputTab('output');
+      setRequestError(null);
+    });
+
+    socket.on('reset-input', () => {
+      setPendingSniffVar(null);
+      setPendingSniffRequestId(null);
+      setPendingSniffPrompt('');
+      setConsoleInputText('');
+      setLastInputEcho(null);
+    });
+
+    socket.on('compile-result', (compileResult: MultiLineCompilerResult) => {
+      setResult(compileResult);
+      setPendingSniffVar(null);
+      setPendingSniffRequestId(null);
+      setPendingSniffPrompt('');
+      setIsRunning(false);
+      setRequestError(null);
+    });
+
+    socket.on('compile-error', (payload: { message?: string }) => {
+      setRequestError(payload?.message ?? 'Compilation failed');
+      setPendingSniffVar(null);
+      setPendingSniffRequestId(null);
+      setPendingSniffPrompt('');
+      setIsRunning(false);
+    });
+
+    socket.on('connect_error', () => {
+      setRequestError('Cannot connect to compiler socket. Start backend and refresh the page.');
+      setIsRunning(false);
+    });
+
+    return () => {
+      socket.off('request-input');
+      socket.off('reset-input');
+      socket.off('compile-result');
+      socket.off('compile-error');
+      socket.off('connect_error');
+      socket.disconnect();
+      socketRef.current = null;
+    };
   }, []);
 
-  const handleRunCompiler = useCallback(async (overrideInput?: Record<string, string>) => {
+  const handleRunCompiler = useCallback((overrideInput?: Record<string, string>) => {
     if (!code.trim()) return;
+
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) {
+      setRequestError('Cannot connect to compiler socket. Start backend and refresh the page.');
+      return;
+    }
 
     const payloadInput = overrideInput ?? runtimeInputMap;
 
     setIsRunning(true);
     setRequestError(null);
-    try {
-      const res = await fetch('/api/compile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, input: payloadInput }),
-      });
-      if (!res.ok) {
-        const payload = (await res.json().catch(() => null)) as { message?: string } | null;
-        throw new Error(payload?.message ?? 'Failed to compile code');
-      }
-      const compileResult = (await res.json()) as MultiLineCompilerResult;
-      setResult(compileResult);
+    setPendingSniffVar(null);
+    setPendingSniffRequestId(null);
+    setPendingSniffPrompt('');
 
-      const missingSniffVar = detectSniffRequest(compileResult);
-      if (missingSniffVar) {
-        const promptCandidate = compileResult.outputValues?.length
-          ? compileResult.outputValues[compileResult.outputValues.length - 1]
-          : `enter ${missingSniffVar}:`;
-        setPendingSniffVar(missingSniffVar);
-        setPendingSniffPrompt(promptCandidate);
-      } else {
-        setPendingSniffVar(null);
-        setPendingSniffPrompt('');
-      }
-    } catch (err) {
-      const rawMessage = err instanceof Error ? err.message : 'Unexpected error while compiling';
-      const networkLike = /failed to fetch|networkerror|network error|load failed/i.test(rawMessage);
-      setRequestError(
-        networkLike
-          ? 'Cannot reach compiler API. Start backend with: npm run backend (from project root) or npm run dev (inside backend).'
-          : rawMessage,
-      );
-      setResult(null);
-    } finally {
-      setIsRunning(false);
-    }
-  }, [code, runtimeInputMap, detectSniffRequest]);
+    socket.emit('compile', { code, input: payloadInput });
+  }, [code, runtimeInputMap]);
 
   const handleClear = () => {
     setCode('');
     setRuntimeInputMap({});
     setConsoleInputText('');
     setPendingSniffVar(null);
+    setPendingSniffRequestId(null);
     setPendingSniffPrompt('');
     setLastInputEcho(null);
     setResult(null);
@@ -347,6 +451,12 @@ export default function App() {
 
   const handleSubmitConsoleInput = useCallback(async () => {
     if (!pendingSniffVar) return;
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) {
+      setRequestError('Socket disconnected while waiting for input. Run again after reconnecting.');
+      return;
+    }
+
     const value = consoleInputText.trim();
     if (!value) {
       setRequestError(`Please enter a value for '${pendingSniffVar}'.`);
@@ -357,10 +467,11 @@ export default function App() {
     setRuntimeInputMap(nextInputMap);
     setLastInputEcho({ prompt: pendingSniffPrompt || `enter ${pendingSniffVar}:`, value });
     setConsoleInputText('');
+    socket.emit('submit-input', { requestId: pendingSniffRequestId, name: pendingSniffVar, value });
     setPendingSniffVar(null);
+    setPendingSniffRequestId(null);
     setPendingSniffPrompt('');
-    await handleRunCompiler(nextInputMap);
-  }, [pendingSniffVar, consoleInputText, runtimeInputMap, pendingSniffPrompt, handleRunCompiler]);
+  }, [pendingSniffVar, pendingSniffRequestId, consoleInputText, runtimeInputMap, pendingSniffPrompt]);
 
   const jumpToLine = useCallback((ln: number) => {
     const ta = editorRef.current;
@@ -386,6 +497,7 @@ export default function App() {
   const runLogs = useMemo(() => {
     const logs: string[] = [];
     if (isRunning) logs.push('Fetching results... paw-ping');
+    if (pendingSniffVar) logs.push(`Waiting for input: ${pendingSniffVar}`);
     if (result) {
       logs.push(`Received ${result.lines.length} analyzed line(s).`);
       logs.push(result.hasErrors ? `Detected ${lineErrors.length} line(s) with issues.` : 'Compilation completed without errors.');
@@ -394,68 +506,135 @@ export default function App() {
     if (requestError) logs.push(`Request failed: ${requestError}`);
     return logs;
   }, [isRunning, result, lineErrors.length, requestError]);
+  const analyzerSummary = useMemo(() => (result ? buildAnalyzerStageSummary(result) : []), [result]);
+
+  const startOutputResize = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = outputHeight;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const next = startHeight + (startY - moveEvent.clientY);
+      setOutputHeight(Math.max(170, Math.min(520, next)));
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, [outputHeight]);
+
+  const outputTabs: Array<{ id: 'output' | 'errors' | 'symbols' | 'logs'; label: string; icon: React.ReactNode }> = [
+    { id: 'output', label: 'Output', icon: <TerminalSquare className="size-3.5" /> },
+    { id: 'errors', label: 'Errors', icon: <AlertTriangle className="size-3.5" /> },
+    { id: 'symbols', label: 'Symbols', icon: <Rows3 className="size-3.5" /> },
+    { id: 'logs', label: 'Logs', icon: <Activity className="size-3.5" /> },
+  ];
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
-
-      {/* ── Sticky Header ── */}
-      <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-sm">
-        <div className="mx-auto max-w-screen-xl px-4 py-2.5 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <img src="/retriever-logo.png" alt="Retriever logo" className="h-9 w-9 rounded-lg object-cover flex-none" />
+    <div className="ide-atmosphere min-h-screen text-foreground">
+      <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
+        <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <img src="/retriever-logo.png" alt="Retriever logo" className="h-10 w-10 rounded-xl border border-border/70 object-cover shadow-md" />
             <div className="min-w-0">
-              <h1 className="text-lg font-semibold tracking-tight leading-none flex items-center gap-1.5">
-                Retriever
-                <PawPrint className="size-4 text-[color:var(--golden-main)]" />
+              <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Retriever IDE</p>
+              <h1 className="flex items-center gap-1.5 text-lg font-semibold tracking-tight">
+                Compiler Workbench
               </h1>
-              <p className="text-[11px] text-muted-foreground">Your loyal coding companion</p>
-            </div>
-            <div className="ml-2 hidden sm:flex flex-wrap gap-1.5">
-              <Badge className="treat-badge text-[10px]">Assignment :=</Badge>
-              <Badge className="treat-badge text-[10px]">Delimiter !</Badge>
-              <Badge className="treat-badge text-[10px]">Output arf</Badge>
-              <Badge className="treat-badge text-[10px]">fur · bone · paw · tail · woof</Badge>
             </div>
           </div>
-          <Button
-            variant="ghost" size="icon"
-            onClick={() => setIsDark(d => !d)}
-            className="h-9 w-9 rounded-full flex-none"
-            aria-label="Toggle theme"
-          >
-            {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-          </Button>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="hidden rounded-full border border-border/70 bg-muted/45 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground md:inline-flex">
+              Ctrl+Enter run | Tab indent
+            </span>
+            <Button
+              onClick={() => handleRunCompiler()}
+              disabled={!code.trim() || isRunning}
+              className="h-9 rounded-xl bg-[linear-gradient(140deg,#E6A84A,#C98A2E)] px-4 text-[#2A1D0A] shadow-sm transition hover:shadow-[0_0_18px_rgba(230,168,74,0.4)]"
+            >
+              {isRunning ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" /> Running
+                </>
+              ) : (
+                <>
+                  <Play className="size-3.5" /> Run
+                </>
+              )}
+            </Button>
+            <Button variant="outline" onClick={handleClear} className="h-9 rounded-xl border-border/80 px-3">
+              <Trash2 className="size-3.5" /> Clear
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsGuideOpen(v => !v)}
+              className="h-9 w-9 rounded-xl border border-border/70"
+              aria-label="Toggle guide"
+            >
+              {isGuideOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsDark(d => !d)}
+              className="h-9 w-9 rounded-xl border border-border/70"
+              aria-label="Toggle theme"
+            >
+              {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+            </Button>
+          </div>
         </div>
       </header>
 
-      {/* ── Main Content ── */}
-      <main className="mx-auto w-full max-w-screen-xl flex-1 px-4 py-4 pb-24 flex flex-col gap-4">
-
-        {/* Row 1: Editor | Cheat Sheet */}
-        <div className={cn('grid gap-4', isGuideOpen ? 'lg:grid-cols-[1fr_360px]' : 'lg:grid-cols-1')}>
-
-          {/* Editor card */}
-          <Card className="gap-0 overflow-hidden border border-border shadow-sm flex flex-col">
-            <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-2 flex-none">
-              <span className="font-mono text-[11px] tracking-wide uppercase text-muted-foreground">
-                Source Code
-              </span>
+      <main className="mx-auto flex h-[calc(100vh-73px)] w-full max-w-[1500px] flex-col gap-3 px-4 py-3">
+        <section className={cn('grid min-h-0 flex-1 gap-3', isGuideOpen ? 'xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1')}>
+          <Card className="glass-panel min-h-0 gap-0 overflow-hidden rounded-2xl border-border/70">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-muted/35 px-4 py-2.5">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground/50 font-mono hidden sm:block">
-                  Ctrl+Enter to run · Tab to indent
-                </span>
+                <FileCode2 className="size-4 text-[color:var(--golden-main)]" />
+                <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Editor</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <p>Test Cases:</p>
+                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.basicProgram)}>
+                  starter
+                </Button>
                 <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIsGuideOpen(v => !v)}
-                  className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  variant="outline"
+                  className="h-7 rounded-lg border-border/70 px-2 text-xs"
+                  onClick={() => {
+                    setCode(EXAMPLE_SNIPPETS.inputOutput);
+                    setRuntimeInputMap({});
+                    setLastInputEcho(null);
+                  }}
                 >
-                  {isGuideOpen ? <PanelRightClose className="size-3.5" /> : <PanelRightOpen className="size-3.5" />}
-                  {isGuideOpen ? 'Hide Guide' : 'Show Guide'}
+                  interactive
+                </Button>
+                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.scopedProgram)}>
+                  scopes
+                </Button>
+                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.ifElseProgram)}>
+                  branches
+                </Button>
+                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.syntaxError)}>
+                  syntax error
+                </Button>
+                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.semanticError)}>
+                  semantic error
+                </Button>
+                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.lexicalError)}>
+                  lexical error
                 </Button>
               </div>
             </div>
-            <div className="flex-1 overflow-hidden">
+
+            <div className="min-h-0 flex-1">
               <CodeEditor
                 value={code}
                 onChange={setCode}
@@ -466,222 +645,192 @@ export default function App() {
             </div>
           </Card>
 
-          {/* Cheat sheet */}
-          {isGuideOpen && <CheatSheetPanel />}
-        </div>
-
-        {/* Row 2: Compiler Output (full width) */}
-        <Card className="gap-0 overflow-hidden border border-border shadow-sm">
-          <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-2">
-            <span className="font-mono text-[11px] tracking-wide uppercase text-muted-foreground">
-              Compiler Output
-            </span>
-            <div className="flex items-center gap-2">
-              <CompileMascot state={mascotState} />
-              <div className="rounded-full border border-border bg-background/70 p-0.5 flex items-center gap-1">
-                <button
-                  onClick={() => setActiveOutputTab('output')}
-                  className={cn('rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors', activeOutputTab === 'output' ? 'bg-[color:var(--golden-main)] text-[#2A1D0A]' : 'text-muted-foreground hover:text-foreground')}
-                >
-                  Output
-                </button>
-                <button
-                  onClick={() => setActiveOutputTab('errors')}
-                  className={cn('rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors', activeOutputTab === 'errors' ? 'bg-[color:var(--golden-main)] text-[#2A1D0A]' : 'text-muted-foreground hover:text-foreground')}
-                >
-                  Errors
-                </button>
-                <button
-                  onClick={() => setActiveOutputTab('logs')}
-                  className={cn('rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors', activeOutputTab === 'logs' ? 'bg-[color:var(--golden-main)] text-[#2A1D0A]' : 'text-muted-foreground hover:text-foreground')}
-                >
-                  Logs
-                </button>
-              </div>
-              {isRunning && (
-                <span className="flex items-center gap-1.5 text-xs text-[color:var(--golden-main)] font-medium">
-                  <Loader2 className="size-3 animate-spin" /> Fetching results...
-                </span>
-              )}
+          {isGuideOpen && (
+            <div className="guide-appear min-h-0">
+              <CheatSheetPanel className="h-full rounded-2xl" />
             </div>
-          </div>
-          <div className="p-4 min-h-[180px]">
-            {activeOutputTab === 'output' && requestError ? (
-              <div className="confused-shake rounded-lg border border-[#FF6B6B]/30 bg-[#FF6B6B]/10 px-4 py-3 text-sm">
-                <p className="font-semibold text-[#FF6B6B] mb-1">Oops! Something went wrong.</p>
-                <p className="text-[#FF6B6B]/80 mb-2">Let's sniff out the issue...</p>
-                <p className="text-[#FF6B6B]/80">{requestError}</p>
+          )}
+        </section>
+
+        <section className="relative">
+          <button
+            type="button"
+            onMouseDown={startOutputResize}
+            className="output-resizer group"
+            aria-label="Resize output panel"
+          >
+            <SlidersHorizontal className="size-3.5 text-muted-foreground/70 transition group-hover:text-foreground" />
+          </button>
+
+          <Card
+            className="glass-panel gap-0 overflow-hidden rounded-2xl border-border/70"
+            style={{ height: `${outputHeight}px` }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-muted/35 px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <CompileMascot state={mascotState} />
+                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Output Panel</span>
               </div>
-            ) : activeOutputTab === 'output' && result && !result.hasErrors ? (
-              <div className="space-y-3">
-                <div className="relative overflow-hidden rounded-lg border border-emerald-400/40 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-2.5 text-sm font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-2">
-                  <span>✓</span> Good job! Your code ran perfectly!
-                  <span className="paw-pop paw-pop-1" aria-hidden>+</span>
-                  <span className="paw-pop paw-pop-2" aria-hidden>+</span>
-                  <span className="paw-pop paw-pop-3" aria-hidden>+</span>
+
+              <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border/70 bg-background/70 p-1">
+                {outputTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveOutputTab(tab.id)}
+                    className={cn(
+                      'flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
+                      activeOutputTab === tab.id
+                        ? 'bg-[color:var(--golden-main)] text-[#2A1D0A]'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {tab.icon} {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="h-full overflow-auto p-3">
+              {activeOutputTab === 'output' && requestError ? (
+                <div className="confused-shake rounded-xl border border-[#FF6B6B]/35 bg-[#FF6B6B]/10 p-4 text-sm">
+                  <p className="font-semibold text-[#FF6B6B]">Request failed</p>
+                  <p className="mt-1 text-[#FFB3B3]">{requestError}</p>
                 </div>
-                {result.outputValues && result.outputValues.length > 0 && (
-                  <div className="rounded-lg border border-border bg-[#1e2330] px-4 py-3 font-mono text-sm">
-                    <p className="text-[10px] uppercase tracking-wider text-[color:var(--golden-main)] mb-2 font-semibold">Output</p>
-                    {result.outputValues.map((val, i) => {
+              ) : activeOutputTab === 'output' && (pendingSniffVar || isRunning || result) ? (
+                <div className="space-y-3">
+                  {isRunning && (
+                    <div className="rounded-xl border border-[color:var(--golden-main)]/35 bg-[color:var(--golden-main)]/10 px-3 py-2 text-xs font-medium text-foreground/90">
+                      Compiler is processing your program.
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-border/70 bg-[#151B28] px-4 py-3 font-mono text-sm">
+                    <p className="mb-2 text-[10px] uppercase tracking-[0.16em] text-[color:var(--golden-main)]">Console</p>
+
+                    {result?.outputValues?.length ? result.outputValues.map((val, index) => {
                       const shouldEchoInput = Boolean(
                         lastInputEcho &&
                         val.trim() === lastInputEcho.prompt.trim() &&
-                        i === result.outputValues.findIndex((v) => v.trim() === lastInputEcho.prompt.trim()),
+                        index === result.outputValues.findIndex((item) => item.trim() === lastInputEcho.prompt.trim()),
                       );
-
-                      const rendered = shouldEchoInput
-                        ? `${val} ${lastInputEcho?.value ?? ''}`
-                        : val;
-
-                      return <div key={i} className="text-[#B5CEA8] leading-6">› {rendered}</div>;
-                    })}
+                      const rendered = shouldEchoInput ? `${val} ${lastInputEcho?.value ?? ''}` : val;
+                      return <div key={`${val}-${index}`} className="leading-6 text-[#B5CEA8]">&gt; {rendered}</div>;
+                    }) : (
+                      <p className="text-[#95A4C1]">Console is idle.</p>
+                    )}
 
                     {pendingSniffVar && (
-                      <div className="mt-2 border-t border-white/10 pt-2">
-                        <div className="text-[#9CDCFE] leading-6">› {pendingSniffPrompt || `enter ${pendingSniffVar}:`}</div>
-                        <div className="flex items-center gap-2">
+                      <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
+                        <div className="leading-6 text-[#9CDCFE]">&gt; {pendingSniffPrompt || `enter ${pendingSniffVar}:`}</div>
+                        <div className="flex flex-wrap items-center gap-2">
                           <input
                             value={consoleInputText}
-                            onChange={(e) => setConsoleInputText(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
+                            onChange={(event) => setConsoleInputText(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
                                 void handleSubmitConsoleInput();
                               }
                             }}
                             placeholder={`Type value for ${pendingSniffVar}`}
-                            className="h-8 flex-1 rounded border border-border bg-[#111520] px-2 text-[#DCDCDC] outline-none focus:border-[color:var(--golden-main)]"
+                            className="h-9 min-w-[200px] flex-1 rounded-lg border border-border/70 bg-[#101624] px-2.5 text-[#DCDCDC] outline-none focus:border-[color:var(--golden-main)]"
                           />
-                          <Button className="h-8 px-3 text-xs" onClick={() => void handleSubmitConsoleInput()}>
+                          <Button className="h-9 rounded-lg px-3 text-xs" onClick={() => void handleSubmitConsoleInput()}>
                             Submit
                           </Button>
                         </div>
                       </div>
                     )}
                   </div>
-                )}
-              </div>
-            ) : activeOutputTab === 'output' && !isRunning ? (
-              <div className="flex min-h-[140px] items-center justify-center text-center text-muted-foreground/50 text-sm italic">
-                Compiler output will appear here after running your code.
-              </div>
-            ) : activeOutputTab === 'errors' && lineErrors.length > 0 ? (
-              <div className="space-y-2">
-                {lineErrors.map(line => (
-                  <button
-                    key={`line-${line.lineNumber}`}
-                    onClick={() => jumpToLine(line.lineNumber)}
-                    className="w-full text-left rounded-lg border border-[#FF6B6B]/25 bg-[#FF6B6B]/8 hover:bg-[#FF6B6B]/15 dark:bg-[#FF6B6B]/10 dark:hover:bg-[#FF6B6B]/18 px-4 py-2.5 transition-colors cursor-pointer"
-                  >
-                    <p className="mb-1 font-mono text-[11px] font-bold uppercase tracking-wide text-[#FF6B6B]">
-                      ↳ Line {line.lineNumber}
-                      <span className="ml-2 text-[#FF6B6B]/50 normal-case font-normal">click to jump</span>
-                    </p>
-                    {line.messages.map(msg => (
-                      <p key={msg} className="text-sm text-[#FF9B9B]">{msg}</p>
-                    ))}
-                  </button>
-                ))}
-              </div>
-            ) : activeOutputTab === 'errors' ? (
-              <div className="flex min-h-[140px] items-center justify-center text-center text-muted-foreground/50 text-sm italic">
-                No errors yet. Run your code to check behavior.
-              </div>
-            ) : activeOutputTab === 'logs' ? (
-              <div className="rounded-lg border border-border bg-muted/20 px-4 py-3 font-mono text-xs space-y-1.5">
-                {runLogs.length === 0 ? (
-                  <p className="text-muted-foreground/50 italic">No logs yet. Hit Run Compiler to start a trace.</p>
-                ) : runLogs.map((log, i) => (
-                  <p key={`${log}-${i}`} className="text-muted-foreground">[{String(i + 1).padStart(2, '0')}] {log}</p>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </Card>
-
-        {/* Row 3: Symbol Table */}
-        <Card className="gap-0 overflow-hidden border border-border shadow-sm">
-          <div className="border-b border-border bg-muted/40 px-4 py-2">
-            <span className="font-mono text-[11px] tracking-wide uppercase text-muted-foreground">Dog Tag Registry</span>
-          </div>
-          {symbolRows.length > 0 ? (
-            <div className="overflow-x-auto">
-              <Table className="table-fixed min-w-[440px]">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[24%] py-2.5 px-4 font-mono text-xs font-bold uppercase tracking-wide">Name</TableHead>
-                    <TableHead className="w-[16%] py-2.5 font-mono text-xs font-bold uppercase tracking-wide">Type</TableHead>
-                    <TableHead className="w-[32%] py-2.5 font-mono text-xs font-bold uppercase tracking-wide">Level (Scope)</TableHead>
-                    <TableHead className="w-[14%] py-2.5 font-mono text-xs font-bold uppercase tracking-wide">Offset</TableHead>
-                    <TableHead className="w-[14%] py-2.5 font-mono text-xs font-bold uppercase tracking-wide">Size</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {symbolRows.map((entry, idx) => (
-                    <TableRow key={idx}>
-                      <TableCell className="py-2 px-4 font-mono text-sm">{entry.name}</TableCell>
-                      <TableCell className="py-2 font-mono text-sm text-[color:var(--golden-main)]">{entry.type}</TableCell>
-                      <TableCell className="py-2 font-mono text-sm text-muted-foreground">{entry.levelScope}</TableCell>
-                      <TableCell className="py-2 font-mono text-sm">{entry.offset}</TableCell>
-                      <TableCell className="py-2 font-mono text-sm">{entry.size} B</TableCell>
-                    </TableRow>
+                </div>
+              ) : activeOutputTab === 'output' ? (
+                <div className="flex h-full min-h-[120px] items-center justify-center text-sm italic text-muted-foreground">
+                  Run compiler to see output and interactive input prompts.
+                </div>
+              ) : activeOutputTab === 'errors' && lineErrors.length > 0 ? (
+                <div className="space-y-2">
+                  {analyzerSummary.length > 0 && (
+                    <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                        Error Report
+                      </p>
+                      {analyzerSummary.map((message) => (
+                        <p key={message} className="font-mono text-xs leading-6 text-foreground/85">
+                          {message}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  {lineErrors.map((line) => (
+                    <button
+                      type="button"
+                      key={`line-${line.lineNumber}`}
+                      onClick={() => jumpToLine(line.lineNumber)}
+                      className="w-full cursor-pointer rounded-xl border border-[#FF6B6B]/30 bg-[#FF6B6B]/10 p-3 text-left transition hover:bg-[#FF6B6B]/15"
+                    >
+                      <p className="font-mono text-[11px] font-bold uppercase tracking-wide text-[#FF6B6B]">line {line.lineNumber}</p>
+                      {line.messages.map((message) => (
+                        <p key={message} className="mt-1 text-sm text-[#FFB3B3]">{message}</p>
+                      ))}
+                    </button>
                   ))}
-                </TableBody>
-                <tfoot>
-                  <TableRow className="border-t border-border bg-muted/30">
-                    <TableCell colSpan={4} className="py-2 px-4 font-mono text-xs font-bold uppercase tracking-wide text-muted-foreground">Total Space</TableCell>
-                    <TableCell className="py-2 font-mono text-sm font-bold">{symbolRows.reduce((s, r) => s + r.size, 0)} B</TableCell>
-                  </TableRow>
-                </tfoot>
-              </Table>
+                </div>
+              ) : activeOutputTab === 'errors' ? (
+                <div className="flex h-full min-h-[120px] items-center justify-center text-sm italic text-muted-foreground">
+                  No analyzer errors detected.
+                </div>
+              ) : activeOutputTab === 'symbols' && symbolRows.length > 0 ? (
+                <Table className="min-w-[520px] table-fixed">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[26%] px-3 py-2 text-xs uppercase tracking-wide">Name</TableHead>
+                      <TableHead className="w-[16%] py-2 text-xs uppercase tracking-wide">Type</TableHead>
+                      <TableHead className="w-[32%] py-2 text-xs uppercase tracking-wide">Scope</TableHead>
+                      <TableHead className="w-[12%] py-2 text-xs uppercase tracking-wide">Offset</TableHead>
+                      <TableHead className="w-[14%] py-2 text-xs uppercase tracking-wide">Size</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {symbolRows.map((entry, index) => (
+                      <TableRow key={`${entry.name}-${index}`}>
+                        <TableCell className="px-3 py-2 font-mono text-sm">{entry.name}</TableCell>
+                        <TableCell className="py-2 font-mono text-sm text-[color:var(--golden-main)]">{entry.type}</TableCell>
+                        <TableCell className="py-2 font-mono text-sm text-muted-foreground">{entry.levelScope}</TableCell>
+                        <TableCell className="py-2 font-mono text-sm">{entry.offset}</TableCell>
+                        <TableCell className="py-2 font-mono text-sm">{entry.size} B</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : activeOutputTab === 'symbols' ? (
+                <div className="flex h-full min-h-[120px] items-center justify-center text-sm italic text-muted-foreground">
+                  Symbol registry appears after a compile run.
+                </div>
+              ) : (
+                <div className="rounded-xl border border-border/70 bg-muted/25 px-4 py-3 font-mono text-xs">
+                  {runLogs.length === 0 ? (
+                    <p className="text-muted-foreground italic">No logs yet.</p>
+                  ) : runLogs.map((log, index) => (
+                    <p key={`${log}-${index}`} className="text-muted-foreground">[{String(index + 1).padStart(2, '0')}] {log}</p>
+                  ))}
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="p-6 text-center text-sm italic text-muted-foreground/60">
-              Nothing stored yet... try running your code.
-            </div>
-          )}
-        </Card>
+          </Card>
+        </section>
+
+        <footer className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-[11px]">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <BookOpenText className="size-3.5" />
+            <span>Use guide cards on the right for syntax references.</span>
+          </div>
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <PawPrint className="size-3.5 text-[color:var(--golden-main)]" />
+            <span>Retriever keeps sniff sessions in sync via WebSocket.</span>
+          </div>
+        </footer>
       </main>
-
-      {/* ── Floating Action Bar ── */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-md shadow-[0_-4px_16px_rgba(0,0,0,0.08)]">
-        <div className="mx-auto max-w-screen-xl px-4 py-2 flex flex-wrap items-center gap-2">
-          {/* Primary actions */}
-          <Button
-            onClick={() => void handleRunCompiler()}
-            disabled={!code.trim() || isRunning}
-            className="wag-hover h-9 bg-[linear-gradient(135deg,#E6A84A,#C98A2E)] text-[#2A1D0A] hover:shadow-[0_0_20px_rgba(230,168,74,0.35)] active:translate-y-[1px] shadow-sm font-semibold px-5 disabled:opacity-40"
-          >
-            {isRunning
-              ? <><Loader2 className="mr-1.5 size-3.5 animate-spin" />Fetching results...</>
-              : <><PawPrint className="mr-1 size-3.5" /><Play className="mr-1.5 size-3.5" />Run Compiler</>}
-          </Button>
-          <Button variant="ghost" onClick={handleClear} className="h-9 text-muted-foreground hover:text-foreground">
-            <Trash2 className="mr-1.5 size-3.5" />Clear
-          </Button>
-
-          {/* Separator */}
-          <div className="hidden sm:block h-5 w-px bg-border mx-0.5" />
-
-          {/* Test cases */}
-          <span className="hidden sm:inline font-mono text-[10px] uppercase tracking-wider text-muted-foreground/50">Tests:</span>
-          <Button variant="outline" className="h-7 text-xs px-2.5" onClick={() => setCode(EXAMPLE_SNIPPETS.basicProgram)}>basic</Button>
-          <Button variant="outline" className="h-7 text-xs px-2.5" onClick={() => { setCode(EXAMPLE_SNIPPETS.inputOutput); setRuntimeInputMap({}); setLastInputEcho(null); }}>input/output</Button>
-          <Button variant="outline" className="h-7 text-xs px-2.5" onClick={() => setCode(EXAMPLE_SNIPPETS.scopedProgram)}>scopes</Button>
-          <Button variant="outline" className="h-7 text-xs px-2.5" onClick={() => setCode(EXAMPLE_SNIPPETS.ifElseProgram)}>if else</Button>
-
-          {/* Separator */}
-          <div className="hidden sm:block h-5 w-px bg-border mx-0.5" />
-
-          {/* Error demos */}
-          <span className="hidden sm:inline font-mono text-[10px] uppercase tracking-wider text-muted-foreground/50">Errors:</span>
-          <Button variant="outline" className="h-7 text-xs px-2.5 text-[#FF8080] border-[#FF6B6B]/25 hover:bg-[#FF6B6B]/10 hover:text-[#FF6B6B]" onClick={() => setCode(EXAMPLE_SNIPPETS.lexicalError)}>lexical</Button>
-          <Button variant="outline" className="h-7 text-xs px-2.5 text-[#FF8080] border-[#FF6B6B]/25 hover:bg-[#FF6B6B]/10 hover:text-[#FF6B6B]" onClick={() => setCode(EXAMPLE_SNIPPETS.syntaxError)}>syntax</Button>
-          <Button variant="outline" className="h-7 text-xs px-2.5 text-[#FF8080] border-[#FF6B6B]/25 hover:bg-[#FF6B6B]/10 hover:text-[#FF6B6B]" onClick={() => setCode(EXAMPLE_SNIPPETS.semanticError)}>semantic</Button>
-          <Button variant="outline" className="h-7 text-xs px-2.5 text-[#FF8080] border-[#FF6B6B]/25 hover:bg-[#FF6B6B]/10 hover:text-[#FF6B6B]" onClick={() => setCode(EXAMPLE_SNIPPETS.logicalError)}>logical</Button>
-        </div>
-      </div>
     </div>
   );
 }

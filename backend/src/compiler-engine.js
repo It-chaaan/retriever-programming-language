@@ -69,6 +69,74 @@ const STRING_TYPES  = new Set(["fur"]);
 const BOOL_TYPES    = new Set(["woof"]);
 const CHAR_TYPES    = new Set([]);
 
+const defaultInputHandler = async (identifier) => {
+  throw new Error(
+    `No input handler configured for '${identifier}'. Call setInputHandler(fn) before compiling sniff statements.`,
+  );
+};
+
+let inputHandler = defaultInputHandler;
+const pendingInputResolvers = new Map();
+let waitingForInput = false;
+let inputRequestCounter = 0;
+
+function createAbortError(message) {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function clearPendingInputRequest(requestId) {
+  pendingInputResolvers.delete(requestId);
+  waitingForInput = pendingInputResolvers.size > 0;
+}
+
+function resetInputState() {
+  for (const { reject } of pendingInputResolvers.values()) {
+    reject(createAbortError("Compilation reset - input cancelled"));
+  }
+  pendingInputResolvers.clear();
+  waitingForInput = false;
+}
+
+function requestInputValue(identifier) {
+  return new Promise((resolve, reject) => {
+    const requestId = `${identifier}:${Date.now()}:${inputRequestCounter++}`;
+
+    pendingInputResolvers.set(requestId, {
+      resolve: (value) => {
+        clearPendingInputRequest(requestId);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearPendingInputRequest(requestId);
+        reject(error);
+      },
+    });
+    waitingForInput = true;
+
+    Promise.resolve()
+      .then(() => inputHandler(identifier, requestId))
+      .then((value) => {
+        const resolver = pendingInputResolvers.get(requestId);
+        if (!resolver) return;
+        resolver.resolve(value);
+      })
+      .catch((error) => {
+        const resolver = pendingInputResolvers.get(requestId);
+        if (!resolver) return;
+        resolver.reject(error);
+      });
+  });
+}
+
+function setInputHandler(fn) {
+  if (typeof fn !== "function") {
+    throw new TypeError("setInputHandler expects a function");
+  }
+  inputHandler = fn;
+}
+
 // ── Lexer ─────────────────────────────────────────────────────────────────────
 function lexicalAnalysis(code) {
   const tokens = [];
@@ -328,6 +396,296 @@ function parseSniffValue(rawValue, datatype, variableName) {
   return { value: String(rawValue) };
 }
 
+function evaluateCondition(condTokens, symbolTable, currentScope) {
+  const hasParens = condTokens.some((token) => token.type === TOKEN_TYPES.PAREN_OPEN);
+  const openIdx = hasParens ? condTokens.findIndex((token) => token.type === TOKEN_TYPES.PAREN_OPEN) : -1;
+  const closeIdx = hasParens
+    ? condTokens.findIndex((token, index) => index > openIdx && token.type === TOKEN_TYPES.PAREN_CLOSE)
+    : -1;
+
+  const conditionTokens = hasParens
+    ? condTokens.slice(openIdx + 1, closeIdx)
+    : condTokens;
+
+  if (conditionTokens.length === 0) {
+    return { ok: false, value: false, error: "Empty condition expression" };
+  }
+
+  const expressionParts = [];
+
+  for (const token of conditionTokens) {
+    if (
+      token.type === TOKEN_TYPES.COMPARISON_OPERATOR ||
+      token.type === TOKEN_TYPES.LOGICAL_OPERATOR ||
+      token.type === TOKEN_TYPES.ARITHMETIC_OPERATOR ||
+      token.type === TOKEN_TYPES.PAREN_OPEN ||
+      token.type === TOKEN_TYPES.PAREN_CLOSE
+    ) {
+      expressionParts.push(token.value);
+      continue;
+    }
+
+    if (token.type === TOKEN_TYPES.NUMERIC_LITERAL) {
+      expressionParts.push(token.value);
+      continue;
+    }
+
+    if (token.type === TOKEN_TYPES.BOOLEAN_LITERAL) {
+      expressionParts.push(token.value === "true" ? "true" : "false");
+      continue;
+    }
+
+    if (token.type === TOKEN_TYPES.STRING_LITERAL) {
+      expressionParts.push(JSON.stringify(token.value.replace(/^"|"$/g, "")));
+      continue;
+    }
+
+    if (token.type === TOKEN_TYPES.IDENTIFIER) {
+      const symbol = findSymbol(symbolTable, token.value, currentScope);
+      if (!symbol) {
+        return { ok: false, value: false, error: `Undefined variable in condition: '${token.value}'` };
+      }
+
+      if (NUMERIC_TYPES.has(symbol.type)) {
+        expressionParts.push(String(Number(symbol.value)));
+      } else if (BOOL_TYPES.has(symbol.type)) {
+        expressionParts.push(String(symbol.value).toLowerCase() === "true" ? "true" : "false");
+      } else {
+        expressionParts.push(JSON.stringify(String(symbol.value)));
+      }
+      continue;
+    }
+
+    return { ok: false, value: false, error: `Invalid token '${token.value}' in condition` };
+  }
+
+  const safeExpression = expressionParts.join(" ").trim();
+  if (!safeExpression) {
+    return { ok: false, value: false, error: "Empty condition expression" };
+  }
+
+  if (!/^[\w\s'"=!<>&|+\-*/().]+$/.test(safeExpression)) {
+    return { ok: false, value: false, error: "Unsafe condition expression" };
+  }
+
+  try {
+    const evaluated = Function(`"use strict"; return (${safeExpression});`)();
+    return { ok: true, value: Boolean(evaluated) };
+  } catch (_) {
+    return { ok: false, value: false, error: "Failed to evaluate condition" };
+  }
+}
+
+function enterScope(context) {
+  const newScope = context.currentScope + 1;
+  context.currentScope = newScope;
+  if (typeof context.scopeOffsets[newScope] !== "number") {
+    context.scopeOffsets[newScope] = 0;
+  }
+}
+
+function exitScope(context) {
+  if (context.currentScope === 0) return;
+  const nextScope = context.currentScope - 1;
+  context.currentScope = nextScope;
+  context.symbolTable = context.symbolTable.filter((entry) => entry.scopeLevel <= nextScope);
+}
+
+function buildProgram(lines) {
+  return lines.map((line, index) => {
+    const code = line.trim();
+    const lexer = lexicalAnalysis(code);
+    const syntax = syntaxAnalysis(lexer.tokens);
+    return { index, lineNumber: index + 1, code, lexer, syntax, tokens: lexer.tokens };
+  });
+}
+
+function buildBlockMaps(program) {
+  const blockMap = new Map();
+  const reverseBlockMap = new Map();
+  const braceStack = [];
+
+  for (const line of program) {
+    for (const token of line.tokens) {
+      if (token.type === TOKEN_TYPES.SCOPE_BEGIN_KEYWORD) {
+        braceStack.push(line.index);
+      } else if (token.type === TOKEN_TYPES.SCOPE_END_KEYWORD) {
+        const openLine = braceStack.pop();
+        if (typeof openLine === "number") {
+          blockMap.set(openLine, line.index);
+          reverseBlockMap.set(line.index, openLine);
+        }
+      }
+    }
+  }
+
+  return { blockMap, reverseBlockMap };
+}
+
+function buildFunctionMap(program, blockMap) {
+  const functionMap = new Map();
+
+  for (const line of program) {
+    const tokens = line.tokens;
+    if (tokens[0]?.type !== TOKEN_TYPES.TRICK_KEYWORD || tokens[1]?.type !== TOKEN_TYPES.IDENTIFIER) {
+      continue;
+    }
+
+    const fnName = tokens[1].value;
+    const startLine = line.index;
+    const endLine = blockMap.get(startLine);
+    if (typeof endLine !== "number") {
+      continue;
+    }
+
+    const openParen = tokens.findIndex((token) => token.type === TOKEN_TYPES.PAREN_OPEN);
+    const closeParen = tokens.findIndex((token, idx) => idx > openParen && token.type === TOKEN_TYPES.PAREN_CLOSE);
+    const paramNames = [];
+    if (openParen !== -1 && closeParen !== -1) {
+      for (let idx = openParen + 1; idx < closeParen; idx++) {
+        if (tokens[idx].type === TOKEN_TYPES.IDENTIFIER && tokens[idx - 1]?.type === TOKEN_TYPES.DATATYPE) {
+          paramNames.push(tokens[idx].value);
+        }
+      }
+    }
+
+    functionMap.set(fnName, { startLine, endLine, paramNames });
+  }
+
+  return functionMap;
+}
+
+function evaluateValueForType(datatype, exprTokens, context) {
+  if (NUMERIC_TYPES.has(datatype)) {
+    const numeric = evaluateNumericExpression(exprTokens, context.symbolTable, context.currentScope);
+    if (numeric.error) return { error: numeric.error };
+    if (datatype === "bone" && !Number.isInteger(numeric.value)) {
+      return { error: `Type mismatch: bone expects integer, got ${numeric.value}` };
+    }
+    return { value: String(numeric.value) };
+  }
+
+  if (BOOL_TYPES.has(datatype)) {
+    const token = exprTokens[0];
+    if (token?.type === TOKEN_TYPES.BOOLEAN_LITERAL) {
+      return { value: token.value };
+    }
+    if (token?.type === TOKEN_TYPES.IDENTIFIER) {
+      const entry = findSymbol(context.symbolTable, token.value, context.currentScope);
+      if (!entry) return { error: `Undefined variable '${token.value}'` };
+      if (!BOOL_TYPES.has(entry.type)) return { error: `Type mismatch: woof expects boolean value` };
+      return { value: String(entry.value).toLowerCase() === "true" ? "true" : "false" };
+    }
+    return { error: "Type mismatch: woof expects boolean literal" };
+  }
+
+  if (STRING_TYPES.has(datatype)) {
+    const token = exprTokens[0];
+    if (token?.type === TOKEN_TYPES.STRING_LITERAL) {
+      return { value: token.value.replace(/^"|"$/g, "") };
+    }
+    if (token?.type === TOKEN_TYPES.IDENTIFIER) {
+      const entry = findSymbol(context.symbolTable, token.value, context.currentScope);
+      if (!entry) return { error: `Undefined variable '${token.value}'` };
+      if (!STRING_TYPES.has(entry.type)) return { error: "Type mismatch: fur expects string value" };
+      return { value: String(entry.value) };
+    }
+    return { error: "Type mismatch: fur expects string literal" };
+  }
+
+  return { value: "" };
+}
+
+function runInitTokens(initTokens, context) {
+  if (
+    initTokens.length < 4 ||
+    initTokens[0].type !== TOKEN_TYPES.DATATYPE ||
+    initTokens[1].type !== TOKEN_TYPES.IDENTIFIER ||
+    initTokens[2].type !== TOKEN_TYPES.ASSIGN_OPERATOR
+  ) {
+    return { error: "Invalid run init. Expected: <type> <name> := <expr>" };
+  }
+
+  const datatype = initTokens[0].value;
+  const identifier = initTokens[1].value;
+  const exprTokens = initTokens.slice(3);
+  const evaluated = evaluateValueForType(datatype, exprTokens, context);
+  if (evaluated.error) {
+    return { error: evaluated.error };
+  }
+
+  const existing = context.symbolTable.find(
+    (entry) => entry.variable === identifier && entry.scopeLevel === context.currentScope,
+  );
+
+  if (existing) {
+    if (existing.type !== datatype) {
+      return { error: `Type mismatch: '${identifier}' is ${existing.type}, run init expects ${datatype}` };
+    }
+
+    const revIdx = [...context.symbolTable]
+      .reverse()
+      .findIndex((entry) => entry.variable === identifier && entry.scopeLevel === context.currentScope);
+    const realIdx = context.symbolTable.length - 1 - revIdx;
+    if (realIdx >= 0) {
+      context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: evaluated.value };
+    }
+    return { ok: true, message: `run init updated '${identifier}' = ${evaluated.value}` };
+  }
+
+  const offset = context.scopeOffsets[context.currentScope] || 0;
+  context.symbolTable.push({
+    variable: identifier,
+    type: datatype,
+    value: evaluated.value,
+    scopeLevel: context.currentScope,
+    scopeLabel: context.currentScope === 0 ? "Global" : "Local",
+    offset,
+  });
+  context.scopeOffsets[context.currentScope] = offset + (TYPE_SIZE_MAP[datatype] || 4);
+  return { ok: true, message: `run init declared '${identifier}' = ${evaluated.value}` };
+}
+
+function applyRunStep(stepTokens, context) {
+  if (stepTokens.length < 2 || stepTokens[0].type !== TOKEN_TYPES.IDENTIFIER) {
+    return { error: "Invalid run step expression" };
+  }
+
+  const stepVariable = stepTokens[0].value;
+  const entry = findSymbol(context.symbolTable, stepVariable, context.currentScope);
+  if (!entry) {
+    return { error: `Undefined loop variable '${stepVariable}' in run step` };
+  }
+  if (!NUMERIC_TYPES.has(entry.type)) {
+    return { error: `Loop variable '${stepVariable}' must be numeric` };
+  }
+
+  const idx = [...context.symbolTable]
+    .reverse()
+    .findIndex((item) => item.variable === stepVariable && item.scopeLevel === entry.scopeLevel);
+  const realIdx = context.symbolTable.length - 1 - idx;
+  if (realIdx < 0) {
+    return { error: `Loop variable '${stepVariable}' was not found` };
+  }
+
+  const currentValue = Number(context.symbolTable[realIdx].value);
+  if (Number.isNaN(currentValue)) {
+    return { error: `Loop variable '${stepVariable}' is not numeric` };
+  }
+
+  if (stepTokens[1].type === TOKEN_TYPES.INCREMENT) {
+    context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: String(currentValue + 1) };
+    return { ok: true };
+  }
+
+  if (stepTokens[1].type === TOKEN_TYPES.DECREMENT) {
+    context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: String(currentValue - 1) };
+    return { ok: true };
+  }
+
+  return { error: "Only ++ and -- are supported in run step" };
+}
+
 // ── Syntax Analysis ───────────────────────────────────────────────────────────
 function syntaxAnalysis(tokens) {
   const errors = [];
@@ -475,7 +833,7 @@ function syntaxAnalysis(tokens) {
 }
 
 // ── Semantic Analysis ─────────────────────────────────────────────────────────
-function semanticAnalysis(tokens, context) {
+async function semanticAnalysis(tokens, context) {
   const messages = [];
   const errors = [];
   const newSymbolTable = [...context.symbolTable];
@@ -617,13 +975,15 @@ function semanticAnalysis(tokens, context) {
       return { isValid: false, messages, errors, symbolTable: newSymbolTable, context: nextContext };
     }
 
-    const runtimeInput = context.runtimeInput || {};
-    if (!Object.prototype.hasOwnProperty.call(runtimeInput, identifier)) {
-      errors.push(`No input provided for '${identifier}'. Add it in Program Input as ${identifier}=value`);
+    let rawInput;
+    try {
+      rawInput = await requestInputValue(identifier);
+    } catch (error) {
+      errors.push(error?.message || `Failed to read input for '${identifier}'`);
       return { isValid: false, messages, errors, symbolTable: newSymbolTable, context: nextContext };
     }
 
-    const parseResult = parseSniffValue(runtimeInput[identifier], entry.type, identifier);
+    const parseResult = parseSniffValue(rawInput, entry.type, identifier);
     if (parseResult.error) {
       errors.push(parseResult.error);
       return { isValid: false, messages, errors, symbolTable: newSymbolTable, context: nextContext };
@@ -636,6 +996,8 @@ function semanticAnalysis(tokens, context) {
     if (realIdx >= 0) {
       newSymbolTable[realIdx] = { ...newSymbolTable[realIdx], value: parseResult.value };
     }
+
+    nextContext.symbolTable = newSymbolTable;
 
     messages.push(`sniff captured '${identifier}' = ${parseResult.value} ✓`);
     return { isValid: true, messages, errors, symbolTable: newSymbolTable, context: nextContext };
@@ -812,42 +1174,442 @@ function semanticAnalysis(tokens, context) {
 }
 
 // ── Compile ───────────────────────────────────────────────────────────────────
-function compile(code, context) {
+async function compile(code, context) {
   const lexer  = lexicalAnalysis(code);
   const syntax = syntaxAnalysis(lexer.tokens);
-  const semantic = semanticAnalysis(lexer.tokens, context);
+  const semantic = await semanticAnalysis(lexer.tokens, context);
   return { lexer, syntax, semantic };
 }
 
-function compileMultiLine(code, runtimeInput = {}) {
-  const lines = code.split("\n").filter((line) => line.trim() !== "" && !line.trim().startsWith("//"));
+async function compileMultiLine(code, runtimeInput = {}) {
+  resetInputState();
+  const sourceLines = code.split("\n").filter((line) => line.trim() !== "" && !line.trim().startsWith("//"));
+  const program = buildProgram(sourceLines);
+  const { blockMap, reverseBlockMap } = buildBlockMaps(program);
+  const functionMap = buildFunctionMap(program, blockMap);
+
   const results = [];
   let hasErrors = false;
   const outputValues = [];
-  const allDeclaredSymbols = [];
   let context = { currentScope: 0, scopeOffsets: { 0: 0 }, symbolTable: [], runtimeInput };
+  let pc = 0;
 
-  lines.forEach((line, index) => {
-    const prevCount = context.symbolTable.length;
-    const result = compile(line.trim(), context);
-    context = result.semantic.context;
+  const callStack = [];
+  const loopStack = [];
+  const skipStayOpeners = new Set();
 
-    if (context.symbolTable.length > prevCount) {
-      allDeclaredSymbols.push(...context.symbolTable.slice(prevCount));
-    }
-
+  const pushLineResult = (line, result) => {
+    results.push({ lineNumber: line.lineNumber, code: line.code, result });
     if (result.lexer.errors.length > 0 || result.syntax.errors.length > 0 || result.semantic.errors.length > 0) {
       hasErrors = true;
     }
-
     if (result.semantic.outputValue !== undefined && result.semantic.outputValue !== null) {
       outputValues.push(result.semantic.outputValue);
     }
+  };
 
-    results.push({ lineNumber: index + 1, code: line.trim(), result });
+  const semanticPassResult = (line, messages = []) => ({
+    lexer: line.lexer,
+    syntax: line.syntax,
+    semantic: {
+      isValid: true,
+      messages,
+      errors: [],
+      symbolTable: context.symbolTable,
+      context,
+    },
   });
 
-  return { lines: results, finalSymbolTable: allDeclaredSymbols, outputValues, hasErrors };
+  const previousInputHandler = inputHandler;
+  const useRuntimeInputFallback =
+    inputHandler === defaultInputHandler &&
+    runtimeInput !== null &&
+    typeof runtimeInput === "object" &&
+    !Array.isArray(runtimeInput);
+
+  if (useRuntimeInputFallback) {
+    inputHandler = async (identifier) => {
+      if (Object.prototype.hasOwnProperty.call(runtimeInput, identifier)) {
+        return runtimeInput[identifier];
+      }
+      throw new Error(`No input provided for '${identifier}'. Add it in Program Input as ${identifier}=value`);
+    };
+  }
+
+  try {
+    while (pc < program.length) {
+      const line = program[pc];
+      const tokens = line.tokens;
+
+      if (line.lexer.errors.length > 0 || line.syntax.errors.length > 0) {
+        const failed = {
+          lexer: line.lexer,
+          syntax: line.syntax,
+          semantic: {
+            isValid: false,
+            messages: [],
+            errors: ["Skipped semantic analysis due lexer/syntax errors"],
+            symbolTable: context.symbolTable,
+            context,
+          },
+        };
+        pushLineResult(line, failed);
+        pc += 1;
+        continue;
+      }
+
+      // Function definitions are registered in the pre-pass and skipped until called.
+      if (tokens[0]?.type === TOKEN_TYPES.TRICK_KEYWORD) {
+        const fnName = tokens[1]?.value;
+        const fnMeta = fnName ? functionMap.get(fnName) : null;
+        pushLineResult(line, semanticPassResult(line, [`Registered function '${fnName}'`]));
+        if (fnMeta) {
+          pc = fnMeta.endLine + 1;
+        } else {
+          pc += 1;
+        }
+        continue;
+      }
+
+      // Combined closing + else opening line: } stay {
+      if (
+        tokens[0]?.type === TOKEN_TYPES.SCOPE_END_KEYWORD &&
+        tokens[1]?.type === TOKEN_TYPES.ELSE_KEYWORD &&
+        tokens[2]?.type === TOKEN_TYPES.SCOPE_BEGIN_KEYWORD
+      ) {
+        exitScope(context);
+
+        if (skipStayOpeners.has(pc)) {
+          skipStayOpeners.delete(pc);
+          const stayEnd = blockMap.get(pc);
+          pushLineResult(line, semanticPassResult(line, ["Skipped stay block"]));
+          pc = typeof stayEnd === "number" ? stayEnd + 1 : pc + 1;
+          continue;
+        }
+
+        enterScope(context);
+        pushLineResult(line, semanticPassResult(line, ["Entered stay block"]));
+        pc += 1;
+        continue;
+      }
+
+      if (tokens[0]?.type === TOKEN_TYPES.WAG_KEYWORD) {
+        const sitEnd = blockMap.get(pc);
+        const conditionResult = evaluateCondition(tokens, context.symbolTable, context.currentScope);
+
+        if (!conditionResult.ok) {
+          const failed = {
+            lexer: line.lexer,
+            syntax: line.syntax,
+            semantic: {
+              isValid: false,
+              messages: [],
+              errors: [conditionResult.error || "Failed to evaluate sit condition"],
+              symbolTable: context.symbolTable,
+              context,
+            },
+          };
+          pushLineResult(line, failed);
+          pc += 1;
+          continue;
+        }
+
+        let stayLine = null;
+        if (typeof sitEnd === "number") {
+          const closeTokens = program[sitEnd]?.tokens || [];
+          if (
+            closeTokens[0]?.type === TOKEN_TYPES.SCOPE_END_KEYWORD &&
+            closeTokens[1]?.type === TOKEN_TYPES.ELSE_KEYWORD &&
+            closeTokens[2]?.type === TOKEN_TYPES.SCOPE_BEGIN_KEYWORD
+          ) {
+            stayLine = sitEnd;
+          } else {
+            const nextIndex = sitEnd + 1;
+            const nextTokens = program[nextIndex]?.tokens || [];
+            if (nextTokens[0]?.type === TOKEN_TYPES.ELSE_KEYWORD && nextTokens.some((t) => t.type === TOKEN_TYPES.SCOPE_BEGIN_KEYWORD)) {
+              stayLine = nextIndex;
+            }
+          }
+        }
+
+        if (conditionResult.value) {
+          if (typeof stayLine === "number") {
+            skipStayOpeners.add(stayLine);
+          }
+          enterScope(context);
+          pushLineResult(line, semanticPassResult(line, ["sit condition is true"]));
+          pc += 1;
+        } else if (typeof stayLine === "number") {
+          if (stayLine === sitEnd) {
+            enterScope(context);
+            pushLineResult(line, semanticPassResult(line, ["sit condition is false, entering stay block"]));
+            pc = stayLine + 1;
+          } else {
+            pushLineResult(line, semanticPassResult(line, ["sit condition is false, jumping to stay"]));
+            pc = stayLine;
+          }
+        } else {
+          pushLineResult(line, semanticPassResult(line, ["sit condition is false, skipping block"]));
+          pc = typeof sitEnd === "number" ? sitEnd + 1 : pc + 1;
+        }
+        continue;
+      }
+
+      if (tokens[0]?.type === TOKEN_TYPES.ELSE_KEYWORD && tokens.some((token) => token.type === TOKEN_TYPES.SCOPE_BEGIN_KEYWORD)) {
+        if (skipStayOpeners.has(pc)) {
+          skipStayOpeners.delete(pc);
+          const stayEnd = blockMap.get(pc);
+          pushLineResult(line, semanticPassResult(line, ["Skipped stay block"]));
+          pc = typeof stayEnd === "number" ? stayEnd + 1 : pc + 1;
+        } else {
+          enterScope(context);
+          pushLineResult(line, semanticPassResult(line, ["Entered stay block"]));
+          pc += 1;
+        }
+        continue;
+      }
+
+      if (tokens[0]?.type === TOKEN_TYPES.LOOP_KEYWORD) {
+        const loopEnd = blockMap.get(pc);
+        const conditionResult = evaluateCondition(tokens, context.symbolTable, context.currentScope);
+        if (!conditionResult.ok) {
+          const failed = {
+            lexer: line.lexer,
+            syntax: line.syntax,
+            semantic: {
+              isValid: false,
+              messages: [],
+              errors: [conditionResult.error || "Failed to evaluate walk condition"],
+              symbolTable: context.symbolTable,
+              context,
+            },
+          };
+          pushLineResult(line, failed);
+          pc += 1;
+          continue;
+        }
+
+        const existingLoop = loopStack.find((loop) => loop.type === "walk" && loop.headerPc === pc);
+        if (conditionResult.value) {
+          if (!existingLoop && typeof loopEnd === "number") {
+            loopStack.push({ type: "walk", headerPc: pc, endPc: loopEnd });
+          }
+          enterScope(context);
+          pushLineResult(line, semanticPassResult(line, ["walk condition is true"]));
+          pc += 1;
+        } else {
+          if (existingLoop) {
+            const idx = loopStack.indexOf(existingLoop);
+            loopStack.splice(idx, 1);
+          }
+          pushLineResult(line, semanticPassResult(line, ["walk condition is false, exiting loop"]));
+          pc = typeof loopEnd === "number" ? loopEnd + 1 : pc + 1;
+        }
+        continue;
+      }
+
+      if (tokens[0]?.type === TOKEN_TYPES.RUN_KEYWORD) {
+        const runEnd = blockMap.get(pc);
+        let runFrame = loopStack.find((loop) => loop.type === "run" && loop.headerPc === pc);
+
+        if (!runFrame) {
+          const bodyTokens = tokens.slice(1, -1);
+          const segments = [];
+          let currentSegment = [];
+          for (const token of bodyTokens) {
+            if (token.type === TOKEN_TYPES.SEMICOLON) {
+              segments.push(currentSegment);
+              currentSegment = [];
+            } else {
+              currentSegment.push(token);
+            }
+          }
+          segments.push(currentSegment);
+
+          if (segments.length !== 3 || typeof runEnd !== "number") {
+            const failed = {
+              lexer: line.lexer,
+              syntax: line.syntax,
+              semantic: {
+                isValid: false,
+                messages: [],
+                errors: ["Invalid run header. Expected init; condition; step"],
+                symbolTable: context.symbolTable,
+                context,
+              },
+            };
+            pushLineResult(line, failed);
+            pc += 1;
+            continue;
+          }
+
+          const initResult = runInitTokens(segments[0], context);
+          if (initResult.error) {
+            const failed = {
+              lexer: line.lexer,
+              syntax: line.syntax,
+              semantic: {
+                isValid: false,
+                messages: [],
+                errors: [initResult.error],
+                symbolTable: context.symbolTable,
+                context,
+              },
+            };
+            pushLineResult(line, failed);
+            pc += 1;
+            continue;
+          }
+
+          runFrame = {
+            type: "run",
+            headerPc: pc,
+            endPc: runEnd,
+            conditionTokens: segments[1],
+            stepTokens: segments[2],
+            initMessage: initResult.message,
+          };
+          loopStack.push(runFrame);
+        }
+
+        const conditionResult = evaluateCondition(runFrame.conditionTokens, context.symbolTable, context.currentScope);
+        if (!conditionResult.ok) {
+          const failed = {
+            lexer: line.lexer,
+            syntax: line.syntax,
+            semantic: {
+              isValid: false,
+              messages: [],
+              errors: [conditionResult.error || "Failed to evaluate run condition"],
+              symbolTable: context.symbolTable,
+              context,
+            },
+          };
+          pushLineResult(line, failed);
+          pc += 1;
+          continue;
+        }
+
+        if (conditionResult.value) {
+          enterScope(context);
+          const messages = runFrame.initMessage
+            ? [runFrame.initMessage, "run condition is true"]
+            : ["run condition is true"];
+          runFrame.initMessage = null;
+          pushLineResult(line, semanticPassResult(line, messages));
+          pc += 1;
+        } else {
+          const loopIdx = loopStack.indexOf(runFrame);
+          if (loopIdx !== -1) {
+            loopStack.splice(loopIdx, 1);
+          }
+          pushLineResult(line, semanticPassResult(line, ["run condition is false, exiting loop"]));
+          pc = runFrame.endPc + 1;
+        }
+        continue;
+      }
+
+      if (tokens[0]?.type === TOKEN_TYPES.RETURN_KEYWORD && callStack.length > 0) {
+        const runtimeResult = await compile(line.code, context);
+        context = runtimeResult.semantic.context;
+        pushLineResult(line, runtimeResult);
+
+        const frame = callStack.pop();
+        exitScope(context);
+        pc = frame.returnPc;
+        continue;
+      }
+
+      if (
+        tokens[0]?.type === TOKEN_TYPES.IDENTIFIER &&
+        tokens[1]?.type === TOKEN_TYPES.PAREN_OPEN &&
+        tokens[tokens.length - 1]?.type === TOKEN_TYPES.DELIMITER
+      ) {
+        const fnName = tokens[0].value;
+        const fnMeta = functionMap.get(fnName);
+        if (fnMeta) {
+          callStack.push({ returnPc: pc + 1, endLine: fnMeta.endLine });
+          enterScope(context);
+          pushLineResult(line, semanticPassResult(line, [`Calling function '${fnName}'`]));
+          pc = fnMeta.startLine + 1;
+          continue;
+        }
+      }
+
+      if (tokens[0]?.type === TOKEN_TYPES.SCOPE_END_KEYWORD && tokens.length === 1) {
+        const ownerPc = reverseBlockMap.get(pc);
+        const ownerTokens = typeof ownerPc === "number" ? program[ownerPc].tokens : [];
+        const currentLoop = loopStack[loopStack.length - 1];
+        const currentCall = callStack[callStack.length - 1];
+
+        if (currentCall && currentCall.endLine === pc) {
+          exitScope(context);
+          pushLineResult(line, semanticPassResult(line, ["Function returned"]));
+          callStack.pop();
+          pc = currentCall.returnPc;
+          continue;
+        }
+
+        if (currentLoop && currentLoop.endPc === pc && currentLoop.type === "walk") {
+          exitScope(context);
+          pushLineResult(line, semanticPassResult(line, ["walk iteration complete"]));
+          pc = currentLoop.headerPc;
+          continue;
+        }
+
+        if (currentLoop && currentLoop.endPc === pc && currentLoop.type === "run") {
+          const stepResult = applyRunStep(currentLoop.stepTokens, context);
+          if (stepResult.error) {
+            const failed = {
+              lexer: line.lexer,
+              syntax: line.syntax,
+              semantic: {
+                isValid: false,
+                messages: [],
+                errors: [stepResult.error],
+                symbolTable: context.symbolTable,
+                context,
+              },
+            };
+            pushLineResult(line, failed);
+            pc += 1;
+            continue;
+          }
+          exitScope(context);
+          pushLineResult(line, semanticPassResult(line, ["run iteration complete"]));
+          pc = currentLoop.headerPc;
+          continue;
+        }
+
+        if (
+          ownerTokens[0]?.type === TOKEN_TYPES.WAG_KEYWORD ||
+          ownerTokens[0]?.type === TOKEN_TYPES.ELSE_KEYWORD ||
+          ownerTokens[0]?.type === TOKEN_TYPES.CHASE_KEYWORD
+        ) {
+          exitScope(context);
+          pushLineResult(line, semanticPassResult(line, ["Closed conditional block"]));
+          pc += 1;
+          continue;
+        }
+
+        exitScope(context);
+        pushLineResult(line, semanticPassResult(line, ["Closed block"]));
+        pc += 1;
+        continue;
+      }
+
+      const runtimeResult = await compile(line.code, context);
+      context = runtimeResult.semantic.context;
+      pushLineResult(line, runtimeResult);
+      pc += 1;
+    }
+
+    return { lines: results, finalSymbolTable: context.symbolTable, outputValues, hasErrors };
+  } finally {
+    if (useRuntimeInputFallback) {
+      inputHandler = previousInputHandler;
+    }
+  }
 }
 
-module.exports = { compileMultiLine };
+module.exports = { compileMultiLine, setInputHandler, resetInputState };
