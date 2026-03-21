@@ -14,6 +14,8 @@ export interface SyntaxResult {
   expected: string;
   found: string;
   errors: string[];
+  recoveryStrategies?: string[];
+  recoverableErrors?: string[];
 }
 
 export interface SymbolTableEntry {

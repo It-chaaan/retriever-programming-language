@@ -48,7 +48,7 @@
 
 .dark {
   /* ── Dark mode ── */
-  --background: 226 24% 15%;    /* #1E2330 */
+  --background: 0 0% 0%;        /* #000000 */
   --foreground: 0 0% 83%;       /* #D4D4D4 */
   --card: 226 22% 19%;          /* #252B3B */
   --card-foreground: 0 0% 83%;

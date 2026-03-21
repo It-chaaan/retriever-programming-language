@@ -495,7 +495,11 @@ function buildProgram(lines) {
   return lines.map((line, index) => {
     const code = line.trim();
     const lexer = lexicalAnalysis(code);
-    const syntax = syntaxAnalysis(lexer.tokens);
+    const recovery = applyRecoveryStrategies(lexer.tokens);
+    const syntax = syntaxAnalysis(recovery.tokens);
+    syntax.recoveryStrategies = recovery.messages;
+    syntax.recoverableErrors = recovery.recoverableErrors;
+    syntax.normalizedTokens = recovery.tokens;
     return { index, lineNumber: index + 1, code, lexer, syntax, tokens: lexer.tokens };
   });
 }
@@ -629,19 +633,22 @@ function runInitTokens(initTokens, context) {
     const realIdx = context.symbolTable.length - 1 - revIdx;
     if (realIdx >= 0) {
       context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: evaluated.value };
+      updateSymbolValueInHistory(context.symbolHistory, identifier, context.currentScope, evaluated.value);
     }
     return { ok: true, message: `run init updated '${identifier}' = ${evaluated.value}` };
   }
 
   const offset = context.scopeOffsets[context.currentScope] || 0;
-  context.symbolTable.push({
+  const declaredEntry = {
     variable: identifier,
     type: datatype,
     value: evaluated.value,
     scopeLevel: context.currentScope,
     scopeLabel: context.currentScope === 0 ? "Global" : "Local",
     offset,
-  });
+  };
+  context.symbolTable.push(declaredEntry);
+  context.symbolHistory.push({ ...declaredEntry });
   context.scopeOffsets[context.currentScope] = offset + (TYPE_SIZE_MAP[datatype] || 4);
   return { ok: true, message: `run init declared '${identifier}' = ${evaluated.value}` };
 }
@@ -674,16 +681,84 @@ function applyRunStep(stepTokens, context) {
   }
 
   if (stepTokens[1].type === TOKEN_TYPES.INCREMENT) {
-    context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: String(currentValue + 1) };
+    const nextValue = String(currentValue + 1);
+    context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: nextValue };
+    updateSymbolValueInHistory(context.symbolHistory, stepVariable, entry.scopeLevel, nextValue);
     return { ok: true };
   }
 
   if (stepTokens[1].type === TOKEN_TYPES.DECREMENT) {
-    context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: String(currentValue - 1) };
+    const nextValue = String(currentValue - 1);
+    context.symbolTable[realIdx] = { ...context.symbolTable[realIdx], value: nextValue };
+    updateSymbolValueInHistory(context.symbolHistory, stepVariable, entry.scopeLevel, nextValue);
     return { ok: true };
   }
 
   return { error: "Only ++ and -- are supported in run step" };
+}
+
+function updateSymbolValueInHistory(symbolHistory, variableName, scopeLevel, nextValue) {
+  if (!Array.isArray(symbolHistory)) return;
+
+  const reverseIndex = [...symbolHistory]
+    .reverse()
+    .findIndex((entry) => entry.variable === variableName && entry.scopeLevel === scopeLevel);
+
+  if (reverseIndex === -1) return;
+
+  const realIndex = symbolHistory.length - 1 - reverseIndex;
+  symbolHistory[realIndex] = { ...symbolHistory[realIndex], value: nextValue };
+}
+
+function statementRequiresDelimiter(tokens) {
+  const t0 = tokens[0]?.type;
+  if (!t0) return false;
+
+  if (
+    t0 === TOKEN_TYPES.DATATYPE ||
+    t0 === TOKEN_TYPES.FETCH_KEYWORD ||
+    t0 === TOKEN_TYPES.OUTPUT_KEYWORD ||
+    t0 === TOKEN_TYPES.INPUT_KEYWORD ||
+    t0 === TOKEN_TYPES.RETURN_KEYWORD
+  ) {
+    return true;
+  }
+
+  // function call statement: name(...)!
+  if (t0 === TOKEN_TYPES.IDENTIFIER && tokens[1]?.type === TOKEN_TYPES.PAREN_OPEN) {
+    return true;
+  }
+
+  return false;
+}
+
+function applyRecoveryStrategies(tokens) {
+  const messages = [];
+  const recoverableErrors = [];
+  const panicSkippedTokens = tokens.filter((token) => token.type === TOKEN_TYPES.UNKNOWN);
+  let normalizedTokens = tokens.filter((token) => token.type !== TOKEN_TYPES.UNKNOWN);
+
+  if (panicSkippedTokens.length > 0) {
+    const skippedValues = panicSkippedTokens.map((token) => token.value).join(" ");
+    recoverableErrors.push(`Invalid token(s) found: ${skippedValues}`);
+    messages.push(
+      `Panic Mode Recovery: skipped invalid token(s): ${skippedValues}. Parsing continued with valid tokens.`,
+    );
+  }
+
+  const needsDelimiter = statementRequiresDelimiter(normalizedTokens);
+  const hasDelimiter = normalizedTokens[normalizedTokens.length - 1]?.type === TOKEN_TYPES.DELIMITER;
+  if (needsDelimiter && !hasDelimiter) {
+    const insertAt = normalizedTokens[normalizedTokens.length - 1]?.position ?? -1;
+    recoverableErrors.push("Missing delimiter '!' at end of statement");
+    normalizedTokens = [
+      ...normalizedTokens,
+      { value: "!", type: TOKEN_TYPES.DELIMITER, position: insertAt },
+    ];
+    messages.push("Phrase-Level Recovery: inserted missing delimiter '!' at end of statement.");
+  }
+
+  return { tokens: normalizedTokens, messages, recoverableErrors };
 }
 
 // ── Syntax Analysis ───────────────────────────────────────────────────────────
@@ -770,8 +845,8 @@ function syntaxAnalysis(tokens) {
 
   // run type id := init; cond; step {
   if (t0 === TOKEN_TYPES.RUN_KEYWORD) {
-    const expected = "run [TYPE] [ID] := ... {";
-    if (tokens[tokens.length-1].type !== TOKEN_TYPES.SCOPE_BEGIN_KEYWORD) errors.push("Expected { at end of walk");
+    const expected = "run [TYPE] [ID] := [INIT] ; [COND] ; [STEP] {";
+    if (tokens[tokens.length-1].type !== TOKEN_TYPES.SCOPE_BEGIN_KEYWORD) errors.push("Expected { at end of run");
     if (tokens[1]?.type !== TOKEN_TYPES.DATATYPE) errors.push("Expected datatype after run");
     return { isValid: errors.length === 0, expected, found, errors };
   }
@@ -841,6 +916,7 @@ async function semanticAnalysis(tokens, context) {
     ...context,
     symbolTable: newSymbolTable,
     scopeOffsets: { ...context.scopeOffsets },
+    symbolHistory: [...(context.symbolHistory || [])],
   };
   const currentScope = context.currentScope;
 
@@ -936,7 +1012,11 @@ async function semanticAnalysis(tokens, context) {
       else {
         const idx = [...newSymbolTable].reverse().findIndex((e) => e.variable === identifier && e.scopeLevel === entry.scopeLevel);
         const realIdx = newSymbolTable.length - 1 - idx;
-        if (realIdx >= 0) newSymbolTable[realIdx] = { ...newSymbolTable[realIdx], value: String(numEval.value) };
+        if (realIdx >= 0) {
+          const nextValue = String(numEval.value);
+          newSymbolTable[realIdx] = { ...newSymbolTable[realIdx], value: nextValue };
+          updateSymbolValueInHistory(nextContext.symbolHistory, identifier, entry.scopeLevel, nextValue);
+        }
         messages.push(`fetch validated ✓, new value: ${numEval.value}`);
       }
     } else {
@@ -995,6 +1075,7 @@ async function semanticAnalysis(tokens, context) {
     const realIdx = newSymbolTable.length - 1 - idx;
     if (realIdx >= 0) {
       newSymbolTable[realIdx] = { ...newSymbolTable[realIdx], value: parseResult.value };
+      updateSymbolValueInHistory(nextContext.symbolHistory, identifier, entry.scopeLevel, parseResult.value);
     }
 
     nextContext.symbolTable = newSymbolTable;
@@ -1153,12 +1234,14 @@ async function semanticAnalysis(tokens, context) {
 
     if (isCompatible) {
       const offset = nextContext.scopeOffsets[currentScope] || 0;
-      newSymbolTable.push({
+      const declaredEntry = {
         variable: identifier, type: datatype, value: boundValue,
         scopeLevel: currentScope,
         scopeLabel: currentScope === 0 ? "Global" : "Local",
         offset,
-      });
+      };
+      newSymbolTable.push(declaredEntry);
+      nextContext.symbolHistory.push({ ...declaredEntry });
       nextContext.scopeOffsets[currentScope] = offset + (TYPE_SIZE_MAP[datatype] || 4);
       messages.push("Type check passed ✓");
     }
@@ -1176,8 +1259,12 @@ async function semanticAnalysis(tokens, context) {
 // ── Compile ───────────────────────────────────────────────────────────────────
 async function compile(code, context) {
   const lexer  = lexicalAnalysis(code);
-  const syntax = syntaxAnalysis(lexer.tokens);
-  const semantic = await semanticAnalysis(lexer.tokens, context);
+  const recovery = applyRecoveryStrategies(lexer.tokens);
+  const syntax = syntaxAnalysis(recovery.tokens);
+  syntax.recoveryStrategies = recovery.messages;
+  syntax.recoverableErrors = recovery.recoverableErrors;
+  syntax.normalizedTokens = recovery.tokens;
+  const semantic = await semanticAnalysis(recovery.tokens, context);
   return { lexer, syntax, semantic };
 }
 
@@ -1191,7 +1278,7 @@ async function compileMultiLine(code, runtimeInput = {}) {
   const results = [];
   let hasErrors = false;
   const outputValues = [];
-  let context = { currentScope: 0, scopeOffsets: { 0: 0 }, symbolTable: [], runtimeInput };
+  let context = { currentScope: 0, scopeOffsets: { 0: 0 }, symbolTable: [], symbolHistory: [], runtimeInput };
   let pc = 0;
 
   const callStack = [];
@@ -1241,7 +1328,10 @@ async function compileMultiLine(code, runtimeInput = {}) {
       const line = program[pc];
       const tokens = line.tokens;
 
-      if (line.lexer.errors.length > 0 || line.syntax.errors.length > 0) {
+      const hasUnrecoverableLexErrors = line.lexer.errors.some(
+        (error) => !error.startsWith("Unknown character"),
+      );
+      if (hasUnrecoverableLexErrors || line.syntax.errors.length > 0) {
         const failed = {
           lexer: line.lexer,
           syntax: line.syntax,
@@ -1604,7 +1694,7 @@ async function compileMultiLine(code, runtimeInput = {}) {
       pc += 1;
     }
 
-    return { lines: results, finalSymbolTable: context.symbolTable, outputValues, hasErrors };
+    return { lines: results, finalSymbolTable: context.symbolHistory, outputValues, hasErrors };
   } finally {
     if (useRuntimeInputFallback) {
       inputHandler = previousInputHandler;

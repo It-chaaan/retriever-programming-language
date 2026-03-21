@@ -20,11 +20,12 @@ const GUIDE_SECTIONS: GuideSection[] = [
     accent: 'from-amber-500/20 to-orange-500/5',
     subtitle: 'Retriever language commands and structure.',
     items: [
-      { label: 'Conditionals', value: 'sit (...) { } | rollover (...) { } | stay { }' },
-      { label: 'Loops', value: 'walk (...) { } | run <type> <name> := ... { }' },
-      { label: 'Functions', value: 'trick <name>(...) { ... yield <expr> ! }' },
-      { label: 'Statements', value: 'Every statement ends with !' },
-      { label: 'Scopes', value: 'Use { } to define block scope' },
+      { label: 'Conditionals', value: 'sit (...) { } - if block\nrollover (...) { } - else block\nstay (...) { } - else-if block' },
+      { label: 'Loops', value: 'walk (...) { } - while loop\nrun <type> <name> := <init>; <condition>; <name>++ { } - for loop' },
+      { label: 'Functions', value: 'trick <name>(...) { ... yield <expr> ! } - function with return' },
+      { label: 'Statements', value: '<statement> ! - ends a statement' },
+      { label: 'Scopes', value: '{ ... } - block scope' },
+      { label: 'Input/Output Function', value: 'arf <expr> ! - output value\nsniff <name> ! - input value' },
     ],
   },
   {
@@ -34,11 +35,11 @@ const GUIDE_SECTIONS: GuideSection[] = [
     accent: 'from-sky-500/20 to-cyan-500/5',
     subtitle: 'Supported primitives in the analyzer.',
     items: [
-      { label: 'fur', value: 'string' },
-      { label: 'bone', value: 'integer' },
-      { label: 'paw', value: 'float' },
-      { label: 'tail', value: 'double' },
-      { label: 'woof', value: 'boolean' },
+      { label: 'fur', value: 'fur - string text' },
+      { label: 'bone', value: 'bone - integer number' },
+      { label: 'paw', value: 'paw - float number' },
+      { label: 'tail', value: 'tail - double number' },
+      { label: 'woof', value: 'woof - boolean true/false' },
     ],
   },
   {
@@ -48,11 +49,10 @@ const GUIDE_SECTIONS: GuideSection[] = [
     accent: 'from-violet-500/20 to-fuchsia-500/5',
     subtitle: 'Expression and assignment operators.',
     items: [
-      { label: 'Assignment', value: ':=' },
-      { label: 'Arithmetic', value: '+  -  *  /' },
-      { label: 'Comparison', value: '==  !=  >  <  >=  <=' },
-      { label: 'Logical', value: '&&  ||' },
-      { label: 'I/O', value: 'arf <expr> ! | sniff <name> !' },
+      { label: 'Assignment', value: ':= - assign value' },
+      { label: 'Arithmetic', value: '+  -  *  / - math operators' },
+      { label: 'Comparison', value: '==  !=  >  <  >=  <= - compare values' },
+      { label: 'Logical', value: '&&  || - combine conditions' },
     ],
   },
 ];
@@ -151,7 +151,7 @@ export function CheatSheetPanel({ className }: { className?: string }) {
                   {section.items.map((item) => (
                     <div key={`${section.id}-${item.label}`} className="rounded-lg border border-border/60 bg-background/45 px-2.5 py-2">
                       <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{item.label}</p>
-                      <p className="mt-1 font-mono text-xs leading-relaxed text-[var(--tok-kw)]">{item.value}</p>
+                      <p className="mt-1 whitespace-pre-line font-mono text-xs leading-relaxed text-[var(--tok-kw)]">{item.value}</p>
                     </div>
                   ))}
                 </div>

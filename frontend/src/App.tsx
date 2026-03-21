@@ -16,11 +16,9 @@ import {
   PanelRightOpen,
   TerminalSquare,
   AlertTriangle,
-  Activity,
   Rows3,
   FileCode2,
   BookOpenText,
-  Sparkles,
   SlidersHorizontal,
 } from 'lucide-react';
 import type { MultiLineCompilerResult } from './types/compiler';
@@ -32,23 +30,24 @@ type SymbolRow = { name: string; type: string; levelScope: string; offset: numbe
 
 // ── Constants ─────────────────────────────────────────────
 const EXAMPLE_SNIPPETS = {
-  basicProgram: [
+  simpleScopeArithmetic: [
     'bone number := 10!',
     'bone total := number + 5!',
+    '{',
+    '  bone local := total * 2!',
+    '  arf "Local value: " + local!',
+    '}',
     'arf "Total is: " + total!',
   ].join('\n'),
-  inputOutput: [
-    'fur username!',
-    'sniff username!',
-    'arf "Hello, " + username!',
-  ].join('\n'),
-  scopedProgram: [
-    'bone x := 5!',
-    'sit ( x > 3 ) {',
-    '  bone y := x + 2!',
-    '  arf "Inner: " + y!',
+  loopProgram: [
+    'bone i := 0!',
+    'walk ( i < 3 ) {',
+    '  arf "walk i = " + i!',
+    '  fetch i := i + 1!',
     '}',
-    'arf "Outer: " + x!',
+    'run bone j := 0; j < 3; j++ {',
+    '  arf "run j = " + j!',
+    '}',
   ].join('\n'),
   ifElseProgram: [
     'bone score := 85!',
@@ -58,10 +57,21 @@ const EXAMPLE_SNIPPETS = {
     '  arf "Fail" !',
     '}',
   ].join('\n'),
+  functionProgram: [
+    'trick showMessage() {',
+    '  arf "Function executed!"!',
+    '  yield true!',
+    '}',
+    'showMessage()!',
+  ].join('\n'),
   lexicalError: 'bone bad := 5 @ !',
-  syntaxError: 'bone value = 10 !',
+  syntacticalError: 'bone value = 10 !',
   semanticError: 'bone total := missingVar + 1 !',
-  logicalError: ['bone n := 10 !', 'bone result := n / 0 !', 'arf result !'].join('\n'),
+  recoveryError: [
+    'bone age := 20',
+    'bone points := age + 5 @ !',
+    'arf "Recovered total: " + points!',
+  ].join('\n'),
 };
 
 const TYPE_LABEL_MAP: Record<string, string> = {
@@ -278,7 +288,7 @@ function CodeEditor({ value, onChange, onRunCompiler, errorLines, editorRef }: C
           onScroll={syncScroll}
           spellCheck={false}
           wrap="off"
-          placeholder="// Write your Retriever code here...  e.g. Fur name := &quot;Buddy&quot;!"
+          placeholder="// Write your Retriever code here..."
           className="code-textarea absolute inset-0 z-10 w-full h-full resize-none overflow-auto pt-3 px-3 pb-3 outline-none border-0 leading-6 text-sm font-mono"
         />
       </div>
@@ -294,6 +304,8 @@ function buildLineErrors(results: MultiLineCompilerResult) {
       messages: [
         ...line.result.lexer.errors.map(m => `LEXER: ${m}`),
         ...line.result.syntax.errors.map(m => `SYNTAX: ${m}`),
+        ...(line.result.syntax.recoverableErrors ?? []).map(m => `SYNTAX (Recovered): ${m}`),
+        ...(line.result.syntax.recoveryStrategies ?? []).map(m => `RECOVERY: ${m}`),
         ...line.result.semantic.errors.map(m => `SEMANTIC: ${m}`),
       ],
     }))
@@ -336,6 +348,82 @@ function buildAnalyzerStageSummary(results: MultiLineCompilerResult) {
   return errors;
 }
 
+function buildAnalyzerTranscript(results: MultiLineCompilerResult) {
+  const transcript: string[] = [];
+  const unknownTokenCount = results.lines.reduce(
+    (count, line) => count + line.result.lexer.tokens.filter((token) => token.type === 'UNKNOWN').length,
+    0,
+  );
+  const lexicalErrorCount = results.lines.reduce((count, line) => count + line.result.lexer.errors.length, 0);
+  const syntaxErrorCount = results.lines.reduce((count, line) => count + line.result.syntax.errors.length, 0);
+  const semanticErrorCount = results.lines.reduce((count, line) => count + line.result.semantic.errors.length, 0);
+
+  transcript.push('--- STARTING LEXICAL ANALYSIS ---');
+  results.lines.forEach((line) => {
+    if (!line.code.trim()) return;
+    line.result.lexer.tokens.forEach((token) => {
+      transcript.push(`[LEXER] Found '${token.value}' -> Identified as ${token.type}`);
+    });
+    line.result.lexer.errors.forEach((error) => {
+      transcript.push(`[LEXER] Error (line ${line.lineNumber}): ${error}`);
+    });
+  });
+
+  if (lexicalErrorCount === 0) {
+    transcript.push(`✓ Lexical Analysis Complete. ${unknownTokenCount} Unknown Tokens.`);
+  } else {
+    transcript.push(`✗ Lexical Analysis Complete with ${lexicalErrorCount} error(s).`);
+  }
+
+  transcript.push('');
+  transcript.push('--- STARTING SYNTAX ANALYSIS ---');
+  transcript.push('[PARSER] Checking statement structure...');
+  results.lines.forEach((line) => {
+    if (!line.code.trim()) return;
+    (line.result.syntax.recoverableErrors ?? []).forEach((error) => {
+      transcript.push(`[PARSER] Line ${line.lineNumber} recovered error: ${error}`);
+    });
+    (line.result.syntax.recoveryStrategies ?? []).forEach((strategy) => {
+      transcript.push(`[PARSER] Recovery strategy (line ${line.lineNumber}): ${strategy}`);
+    });
+    transcript.push(`[PARSER] Line ${line.lineNumber} expected rule: ${line.result.syntax.expected}`);
+    if (line.result.syntax.errors.length === 0) {
+      transcript.push(`[PARSER] Line ${line.lineNumber} structure is valid.`);
+    } else {
+      line.result.syntax.errors.forEach((error) => {
+        transcript.push(`[PARSER] Line ${line.lineNumber} error: ${error}`);
+      });
+    }
+  });
+
+  if (syntaxErrorCount === 0) {
+    transcript.push('✓ Syntax Analysis Complete. No structural errors.');
+  } else {
+    transcript.push(`✗ Syntax Analysis Complete with ${syntaxErrorCount} error(s).`);
+  }
+
+  transcript.push('');
+  transcript.push('--- STARTING SEMANTIC ANALYSIS ---');
+  transcript.push('[SEMANTICS] Checking type compatibility...');
+  results.lines.forEach((line) => {
+    if (!line.code.trim()) return;
+    line.result.semantic.messages.forEach((message) => {
+      transcript.push(`[SEMANTICS] ${message}`);
+    });
+    line.result.semantic.errors.forEach((error) => {
+      transcript.push(`[SEMANTICS] Error (line ${line.lineNumber}): ${error}`);
+    });
+  });
+
+  if (semanticErrorCount === 0) {
+    transcript.push('✓ Semantic Analysis Complete.');
+  } else {
+    transcript.push(`✗ Semantic Analysis Complete with ${semanticErrorCount} error(s).`);
+  }
+
+  return transcript;
+}
+
 // ── App ───────────────────────────────────────────────────
 export default function App() {
   const [code, setCode]               = useState('');
@@ -349,7 +437,7 @@ export default function App() {
   const [isRunning, setIsRunning]     = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [isDark, setIsDark]           = useState(() => localStorage.getItem('theme') === 'dark');
-  const [activeOutputTab, setActiveOutputTab] = useState<'output' | 'errors' | 'symbols' | 'logs'>('output');
+  const [activeOutputTab, setActiveOutputTab] = useState<'output' | 'errors' | 'symbols' | 'analyzer'>('output');
   const [isGuideOpen, setIsGuideOpen] = useState(true);
   const [outputHeight, setOutputHeight] = useState(248);
   const editorRef                     = useRef<HTMLTextAreaElement>(null);
@@ -486,6 +574,20 @@ export default function App() {
 
   const lineErrors  = result ? buildLineErrors(result) : [];
   const symbolRows  = result ? buildSymbolRows(result.finalSymbolTable) : [];
+  const symbolSpaceByLevel = useMemo(() => {
+    if (!result) return [] as Array<{ level: number; total: number }>;
+
+    const totals = result.finalSymbolTable.reduce((acc, entry) => {
+      const level = typeof entry.scopeLevel === 'number' ? entry.scopeLevel : 0;
+      const size = TYPE_SIZE_MAP[entry.type] ?? 4;
+      acc.set(level, (acc.get(level) ?? 0) + size);
+      return acc;
+    }, new Map<number, number>());
+
+    return [...totals.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([level, total]) => ({ level, total }));
+  }, [result]);
   const errorLineSet = useMemo(() => new Set(lineErrors.map(l => l.lineNumber)), [lineErrors]);
   const mascotState: MascotState = isRunning
     ? 'loading'
@@ -494,19 +596,8 @@ export default function App() {
       : result && !result.hasErrors
         ? 'success'
         : 'idle';
-  const runLogs = useMemo(() => {
-    const logs: string[] = [];
-    if (isRunning) logs.push('Fetching results... paw-ping');
-    if (pendingSniffVar) logs.push(`Waiting for input: ${pendingSniffVar}`);
-    if (result) {
-      logs.push(`Received ${result.lines.length} analyzed line(s).`);
-      logs.push(result.hasErrors ? `Detected ${lineErrors.length} line(s) with issues.` : 'Compilation completed without errors.');
-      if (result.outputValues?.length) logs.push(`Program produced ${result.outputValues.length} output value(s).`);
-    }
-    if (requestError) logs.push(`Request failed: ${requestError}`);
-    return logs;
-  }, [isRunning, result, lineErrors.length, requestError]);
   const analyzerSummary = useMemo(() => (result ? buildAnalyzerStageSummary(result) : []), [result]);
+  const analyzerTranscript = useMemo(() => (result ? buildAnalyzerTranscript(result) : []), [result]);
 
   const startOutputResize = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -527,11 +618,11 @@ export default function App() {
     window.addEventListener('mouseup', onMouseUp);
   }, [outputHeight]);
 
-  const outputTabs: Array<{ id: 'output' | 'errors' | 'symbols' | 'logs'; label: string; icon: React.ReactNode }> = [
+  const outputTabs: Array<{ id: 'output' | 'errors' | 'symbols' | 'analyzer'; label: string; icon: React.ReactNode }> = [
     { id: 'output', label: 'Output', icon: <TerminalSquare className="size-3.5" /> },
     { id: 'errors', label: 'Errors', icon: <AlertTriangle className="size-3.5" /> },
     { id: 'symbols', label: 'Symbols', icon: <Rows3 className="size-3.5" /> },
-    { id: 'logs', label: 'Logs', icon: <Activity className="size-3.5" /> },
+    { id: 'analyzer', label: 'Analyzer', icon: <BookOpenText className="size-3.5" /> },
   ];
 
   return (
@@ -555,7 +646,7 @@ export default function App() {
             <Button
               onClick={() => handleRunCompiler()}
               disabled={!code.trim() || isRunning}
-              className="h-9 rounded-xl bg-[linear-gradient(140deg,#E6A84A,#C98A2E)] px-4 text-[#2A1D0A] shadow-sm transition hover:shadow-[0_0_18px_rgba(230,168,74,0.4)]"
+              className="h-9 rounded-xl bg-[color:var(--golden-main)] px-4 text-white shadow-sm transition hover:shadow-[0_0_18px_rgba(61,155,255,0.38)]"
             >
               {isRunning ? (
                 <>
@@ -602,34 +693,29 @@ export default function App() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <p>Test Cases:</p>
-                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.basicProgram)}>
-                  starter
+                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.simpleScopeArithmetic)}>
+                  simple scope + arithmetic
                 </Button>
-                <Button
-                  variant="outline"
-                  className="h-7 rounded-lg border-border/70 px-2 text-xs"
-                  onClick={() => {
-                    setCode(EXAMPLE_SNIPPETS.inputOutput);
-                    setRuntimeInputMap({});
-                    setLastInputEcho(null);
-                  }}
-                >
-                  interactive
-                </Button>
-                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.scopedProgram)}>
-                  scopes
+                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.loopProgram)}>
+                  loop
                 </Button>
                 <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.ifElseProgram)}>
-                  branches
+                  if else
                 </Button>
-                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.syntaxError)}>
-                  syntax error
+                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.functionProgram)}>
+                  function
+                </Button>
+                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.lexicalError)}>
+                  lexical error
+                </Button>
+                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.syntacticalError)}>
+                  syntactical error
                 </Button>
                 <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.semanticError)}>
                   semantic error
                 </Button>
-                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.lexicalError)}>
-                  lexical error
+                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.recoveryError)}>
+                  recovery
                 </Button>
               </div>
             </div>
@@ -681,7 +767,7 @@ export default function App() {
                     className={cn(
                       'flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
                       activeOutputTab === tab.id
-                        ? 'bg-[color:var(--golden-main)] text-[#2A1D0A]'
+                        ? 'bg-[color:var(--golden-main)] text-white'
                         : 'text-muted-foreground hover:text-foreground',
                     )}
                   >
@@ -781,38 +867,56 @@ export default function App() {
                   No analyzer errors detected.
                 </div>
               ) : activeOutputTab === 'symbols' && symbolRows.length > 0 ? (
-                <Table className="min-w-[520px] table-fixed">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[26%] px-3 py-2 text-xs uppercase tracking-wide">Name</TableHead>
-                      <TableHead className="w-[16%] py-2 text-xs uppercase tracking-wide">Type</TableHead>
-                      <TableHead className="w-[32%] py-2 text-xs uppercase tracking-wide">Scope</TableHead>
-                      <TableHead className="w-[12%] py-2 text-xs uppercase tracking-wide">Offset</TableHead>
-                      <TableHead className="w-[14%] py-2 text-xs uppercase tracking-wide">Size</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {symbolRows.map((entry, index) => (
-                      <TableRow key={`${entry.name}-${index}`}>
-                        <TableCell className="px-3 py-2 font-mono text-sm">{entry.name}</TableCell>
-                        <TableCell className="py-2 font-mono text-sm text-[color:var(--golden-main)]">{entry.type}</TableCell>
-                        <TableCell className="py-2 font-mono text-sm text-muted-foreground">{entry.levelScope}</TableCell>
-                        <TableCell className="py-2 font-mono text-sm">{entry.offset}</TableCell>
-                        <TableCell className="py-2 font-mono text-sm">{entry.size} B</TableCell>
+                <div className="space-y-3">
+                  <Table className="min-w-[520px] table-fixed">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[26%] px-3 py-2 text-xs uppercase tracking-wide">Name</TableHead>
+                        <TableHead className="w-[16%] py-2 text-xs uppercase tracking-wide">Type</TableHead>
+                        <TableHead className="w-[32%] py-2 text-xs uppercase tracking-wide">Scope</TableHead>
+                        <TableHead className="w-[12%] py-2 text-xs uppercase tracking-wide">Offset</TableHead>
+                        <TableHead className="w-[14%] py-2 text-xs uppercase tracking-wide">Size</TableHead>
                       </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {symbolRows.map((entry, index) => (
+                        <TableRow key={`${entry.name}-${index}`}>
+                          <TableCell className="px-3 py-2 font-mono text-sm">{entry.name}</TableCell>
+                          <TableCell className="py-2 font-mono text-sm text-[color:var(--golden-main)]">{entry.type}</TableCell>
+                          <TableCell className="py-2 font-mono text-sm text-muted-foreground">{entry.levelScope}</TableCell>
+                          <TableCell className="py-2 font-mono text-sm">{entry.offset}</TableCell>
+                          <TableCell className="py-2 font-mono text-sm">{entry.size} B</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+
+                  <div className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 font-mono text-xs">
+                    {symbolSpaceByLevel.map(({ level, total }) => (
+                      <p key={`space-level-${level}`} className="leading-6 text-foreground/85">
+                        Total Space for level {level} = {total} B
+                      </p>
                     ))}
-                  </TableBody>
-                </Table>
+                  </div>
+                </div>
               ) : activeOutputTab === 'symbols' ? (
                 <div className="flex h-full min-h-[120px] items-center justify-center text-sm italic text-muted-foreground">
                   Symbol registry appears after a compile run.
                 </div>
               ) : (
-                <div className="rounded-xl border border-border/70 bg-muted/25 px-4 py-3 font-mono text-xs">
-                  {runLogs.length === 0 ? (
-                    <p className="text-muted-foreground italic">No logs yet.</p>
-                  ) : runLogs.map((log, index) => (
-                    <p key={`${log}-${index}`} className="text-muted-foreground">[{String(index + 1).padStart(2, '0')}] {log}</p>
+                <div className="rounded-xl border border-border/70 bg-[#151B28] px-4 py-3 font-mono text-xs">
+                  {analyzerTranscript.length === 0 ? (
+                    <p className="text-[#95A4C1] italic">Run compiler to generate analyzer report.</p>
+                  ) : analyzerTranscript.map((line, index) => (
+                    <p
+                      key={`${line}-${index}`}
+                      className={cn(
+                        'leading-6',
+                        line.startsWith('---') ? 'text-[color:var(--golden-main)] font-semibold' : 'text-[#B5CEA8]',
+                      )}
+                    >
+                      {line || '\u00A0'}
+                    </p>
                   ))}
                 </div>
               )}
@@ -820,16 +924,6 @@ export default function App() {
           </Card>
         </section>
 
-        <footer className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-[11px]">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <BookOpenText className="size-3.5" />
-            <span>Use guide cards on the right for syntax references.</span>
-          </div>
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <PawPrint className="size-3.5 text-[color:var(--golden-main)]" />
-            <span>Retriever keeps sniff sessions in sync via WebSocket.</span>
-          </div>
-        </footer>
       </main>
     </div>
   );
