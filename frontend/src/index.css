@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Fira+Code:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -115,6 +115,51 @@ body {
   box-shadow: 0 10px 28px rgba(7, 10, 19, 0.2);
 }
 
+.editor-shell {
+  border: 1px solid hsl(var(--border) / 0.95);
+  box-shadow: 0 16px 32px rgba(7, 10, 19, 0.16), inset 0 0 0 1px rgb(230 168 74 / 0.16);
+}
+
+.run-cta {
+  background: linear-gradient(135deg, rgb(230 168 74), rgb(201 138 46));
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.2) inset, 0 10px 24px rgb(201 138 46 / 0.36);
+}
+
+.run-cta:hover {
+  filter: brightness(1.05);
+}
+
+.run-cta:focus-visible {
+  box-shadow: 0 0 0 3px rgb(230 168 74 / 0.3), 0 12px 28px rgb(201 138 46 / 0.42);
+}
+
+.case-pill {
+  transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.case-pill:hover {
+  transform: translateY(-1px);
+  border-color: rgb(230 168 74 / 0.55);
+  background: rgb(230 168 74 / 0.14);
+}
+
+.case-pill-active {
+  border-color: rgb(230 168 74 / 0.72) !important;
+  background: rgb(230 168 74 / 0.24) !important;
+  color: hsl(var(--foreground));
+  font-weight: 600;
+}
+
+.case-pill-error {
+  color: #ef6f6f;
+}
+
+.case-pill-error:hover,
+.case-pill-error.case-pill-active {
+  border-color: rgb(255 123 123 / 0.62) !important;
+  background: rgb(255 107 107 / 0.14) !important;
+}
+
 .guide-appear {
   animation: guide-appear 220ms ease-out;
 }
@@ -164,15 +209,15 @@ body {
 
 .code-pre {
   color: var(--editor-text);
-  font-family: 'JetBrains Mono', monospace;
-  font-variant-ligatures: none;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-ligatures: contextual;
   letter-spacing: 0;
   tab-size: 2;
 }
 
 .code-textarea {
-  font-family: 'JetBrains Mono', monospace;
-  font-variant-ligatures: none;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-ligatures: contextual;
   letter-spacing: 0;
   tab-size: 2;
   color: transparent !important;

@@ -20,6 +20,7 @@ import {
   FileCode2,
   BookOpenText,
   SlidersHorizontal,
+  FlaskConical,
 } from 'lucide-react';
 import type { MultiLineCompilerResult } from './types/compiler';
 import { cn } from './components/utils';
@@ -27,6 +28,7 @@ import { cn } from './components/utils';
 // ── Types ─────────────────────────────────────────────────
 type CompilerSymbol = MultiLineCompilerResult['finalSymbolTable'][number];
 type SymbolRow = { name: string; type: string; levelScope: string; offset: number; size: number };
+type TestCaseId = keyof typeof EXAMPLE_SNIPPETS;
 
 // ── Constants ─────────────────────────────────────────────
 const EXAMPLE_SNIPPETS = {
@@ -50,7 +52,9 @@ const EXAMPLE_SNIPPETS = {
     '}',
   ].join('\n'),
   ifElseProgram: [
-    'bone score := 85!',
+    'bone score!',
+    'arf "Enter score: "!',
+    'sniff score!',
     'sit ( score >= 75 ) {',
     '  arf "Pass" !',
     '} stay {',
@@ -80,6 +84,21 @@ const TYPE_LABEL_MAP: Record<string, string> = {
 const TYPE_SIZE_MAP: Record<string, number> = {
   fur: 4, bone: 4, paw: 4, tail: 8, woof: 1,
 };
+
+const TEST_CASES: Array<{
+  id: TestCaseId;
+  label: string;
+  kind: 'normal' | 'error';
+}> = [
+  { id: 'simpleScopeArithmetic', label: 'simple scope + arithmetic', kind: 'normal' },
+  { id: 'loopProgram', label: 'loop', kind: 'normal' },
+  { id: 'ifElseProgram', label: 'if else', kind: 'normal' },
+  { id: 'functionProgram', label: 'function', kind: 'normal' },
+  { id: 'lexicalError', label: 'lexical error', kind: 'error' },
+  { id: 'syntacticalError', label: 'syntactical error', kind: 'error' },
+  { id: 'semanticError', label: 'semantic error', kind: 'error' },
+  { id: 'recoveryError', label: 'recovery', kind: 'error' },
+];
 
 // ── Syntax Highlighting ───────────────────────────────────
 const KEYWORDS = new Set([
@@ -298,13 +317,20 @@ function CodeEditor({ value, onChange, onRunCompiler, errorLines, editorRef }: C
 
 // ── Helpers ───────────────────────────────────────────────
 function buildLineErrors(results: MultiLineCompilerResult) {
+  const isLexicalRecovery = (message: string) => message.startsWith('Invalid token(s) found');
+
   return results.lines
     .map(line => ({
       lineNumber: line.lineNumber,
       messages: [
         ...line.result.lexer.errors.map(m => `LEXER: ${m}`),
         ...line.result.syntax.errors.map(m => `SYNTAX: ${m}`),
-        ...(line.result.syntax.recoverableErrors ?? []).map(m => `SYNTAX (Recovered): ${m}`),
+        ...(line.result.syntax.recoverableErrors ?? [])
+          .filter(m => !isLexicalRecovery(m))
+          .map(m => `SYNTAX (Recovered): ${m}`),
+        ...(line.result.syntax.recoverableErrors ?? [])
+          .filter(isLexicalRecovery)
+          .map(m => `LEXER (Recovered): ${m}`),
         ...(line.result.syntax.recoveryStrategies ?? []).map(m => `RECOVERY: ${m}`),
         ...line.result.semantic.errors.map(m => `SEMANTIC: ${m}`),
       ],
@@ -330,8 +356,13 @@ function buildSymbolRows(entries: CompilerSymbol[]): SymbolRow[] {
 }
 
 function buildAnalyzerStageSummary(results: MultiLineCompilerResult) {
+  const parserRecoverableCount = (line: MultiLineCompilerResult['lines'][number]) =>
+    (line.result.syntax.recoverableErrors ?? []).filter((message) => !message.startsWith('Invalid token(s) found')).length;
+
   const hasLexicalErrors = results.lines.some((line) => line.result.lexer.errors.length > 0);
-  const hasParserErrors = results.lines.some((line) => line.result.syntax.errors.length > 0);
+  const hasParserErrors = results.lines.some(
+    (line) => line.result.syntax.errors.length > 0 || parserRecoverableCount(line) > 0,
+  );
   const hasSemanticErrors = results.lines.some((line) => line.result.semantic.errors.length > 0);
 
   const errors: string[] = [];
@@ -349,6 +380,10 @@ function buildAnalyzerStageSummary(results: MultiLineCompilerResult) {
 }
 
 function buildAnalyzerTranscript(results: MultiLineCompilerResult) {
+  const isLexicalRecovery = (message: string) => message.startsWith('Invalid token(s) found');
+  const parserRecoverableCount = (line: MultiLineCompilerResult['lines'][number]) =>
+    (line.result.syntax.recoverableErrors ?? []).filter((message) => !isLexicalRecovery(message)).length;
+
   const transcript: string[] = [];
   const unknownTokenCount = results.lines.reduce(
     (count, line) => count + line.result.lexer.tokens.filter((token) => token.type === 'UNKNOWN').length,
@@ -356,6 +391,10 @@ function buildAnalyzerTranscript(results: MultiLineCompilerResult) {
   );
   const lexicalErrorCount = results.lines.reduce((count, line) => count + line.result.lexer.errors.length, 0);
   const syntaxErrorCount = results.lines.reduce((count, line) => count + line.result.syntax.errors.length, 0);
+  const syntaxRecoveredErrorCount = results.lines.reduce(
+    (count, line) => count + parserRecoverableCount(line),
+    0,
+  );
   const semanticErrorCount = results.lines.reduce((count, line) => count + line.result.semantic.errors.length, 0);
 
   transcript.push('--- STARTING LEXICAL ANALYSIS ---');
@@ -380,26 +419,31 @@ function buildAnalyzerTranscript(results: MultiLineCompilerResult) {
   transcript.push('[PARSER] Checking statement structure...');
   results.lines.forEach((line) => {
     if (!line.code.trim()) return;
-    (line.result.syntax.recoverableErrors ?? []).forEach((error) => {
+    (line.result.syntax.recoverableErrors ?? []).filter((error) => !isLexicalRecovery(error)).forEach((error) => {
       transcript.push(`[PARSER] Line ${line.lineNumber} recovered error: ${error}`);
     });
     (line.result.syntax.recoveryStrategies ?? []).forEach((strategy) => {
       transcript.push(`[PARSER] Recovery strategy (line ${line.lineNumber}): ${strategy}`);
     });
     transcript.push(`[PARSER] Line ${line.lineNumber} expected rule: ${line.result.syntax.expected}`);
-    if (line.result.syntax.errors.length === 0) {
+    const recoveredErrorCount = parserRecoverableCount(line);
+    if (line.result.syntax.errors.length === 0 && recoveredErrorCount === 0) {
       transcript.push(`[PARSER] Line ${line.lineNumber} structure is valid.`);
     } else {
       line.result.syntax.errors.forEach((error) => {
         transcript.push(`[PARSER] Line ${line.lineNumber} error: ${error}`);
       });
+      if (line.result.syntax.errors.length === 0 && recoveredErrorCount > 0) {
+        transcript.push(`[PARSER] Line ${line.lineNumber} had recoverable syntax error(s).`);
+      }
     }
   });
 
-  if (syntaxErrorCount === 0) {
+  const totalParserErrorCount = syntaxErrorCount + syntaxRecoveredErrorCount;
+  if (totalParserErrorCount === 0) {
     transcript.push('✓ Syntax Analysis Complete. No structural errors.');
   } else {
-    transcript.push(`✗ Syntax Analysis Complete with ${syntaxErrorCount} error(s).`);
+    transcript.push(`✗ Syntax Analysis Complete with ${totalParserErrorCount} error(s).`);
   }
 
   transcript.push('');
@@ -427,6 +471,7 @@ function buildAnalyzerTranscript(results: MultiLineCompilerResult) {
 // ── App ───────────────────────────────────────────────────
 export default function App() {
   const [code, setCode]               = useState('');
+  const [activeTestCase, setActiveTestCase] = useState<TestCaseId | null>(null);
   const [runtimeInputMap, setRuntimeInputMap] = useState<Record<string, string>>({});
   const [consoleInputText, setConsoleInputText] = useState('');
   const [pendingSniffVar, setPendingSniffVar] = useState<string | null>(null);
@@ -572,7 +617,7 @@ export default function App() {
     ta.scrollTop = Math.max(0, (ln - 4) * 24);
   }, [code]);
 
-  const lineErrors  = result ? buildLineErrors(result) : [];
+  const lineErrors = useMemo(() => (result ? buildLineErrors(result) : []), [result]);
   const symbolRows  = result ? buildSymbolRows(result.finalSymbolTable) : [];
   const symbolSpaceByLevel = useMemo(() => {
     if (!result) return [] as Array<{ level: number; total: number }>;
@@ -598,6 +643,35 @@ export default function App() {
         : 'idle';
   const analyzerSummary = useMemo(() => (result ? buildAnalyzerStageSummary(result) : []), [result]);
   const analyzerTranscript = useMemo(() => (result ? buildAnalyzerTranscript(result) : []), [result]);
+
+  const handleEditorChange = useCallback((nextCode: string) => {
+    setCode(nextCode);
+    setActiveTestCase(null);
+  }, []);
+
+  const handleApplyTestCase = useCallback((id: TestCaseId) => {
+    setCode(EXAMPLE_SNIPPETS[id]);
+    setActiveTestCase(id);
+  }, []);
+
+  const lastAutoFocusedErrorLineRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (lineErrors.length === 0) {
+      lastAutoFocusedErrorLineRef.current = null;
+      if (result && !requestError) {
+        setActiveOutputTab('output');
+      }
+      return;
+    }
+
+    const firstErrorLine = lineErrors[0].lineNumber;
+    setActiveOutputTab('errors');
+
+    if (lastAutoFocusedErrorLineRef.current !== firstErrorLine) {
+      lastAutoFocusedErrorLineRef.current = firstErrorLine;
+      jumpToLine(firstErrorLine);
+    }
+  }, [lineErrors, result, requestError, jumpToLine]);
 
   const startOutputResize = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -635,6 +709,7 @@ export default function App() {
               <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Retriever IDE</p>
               <h1 className="flex items-center gap-1.5 text-lg font-semibold tracking-tight">
                 Compiler Workbench
+                <PawPrint className="size-4 text-[color:var(--golden-main)]/70" aria-hidden />
               </h1>
             </div>
           </div>
@@ -646,7 +721,7 @@ export default function App() {
             <Button
               onClick={() => handleRunCompiler()}
               disabled={!code.trim() || isRunning}
-              className="h-9 rounded-xl bg-[color:var(--golden-main)] px-4 text-white shadow-sm transition hover:shadow-[0_0_18px_rgba(61,155,255,0.38)]"
+              className="run-cta h-9 rounded-xl bg-[color:var(--golden-main)] px-4 text-white shadow-sm transition hover:shadow-[0_0_18px_rgba(61,155,255,0.38)]"
             >
               {isRunning ? (
                 <>
@@ -685,45 +760,44 @@ export default function App() {
 
       <main className="mx-auto flex h-[calc(100vh-73px)] w-full max-w-[1500px] flex-col gap-3 px-4 py-3">
         <section className={cn('grid min-h-0 flex-1 gap-3', isGuideOpen ? 'xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1')}>
-          <Card className="glass-panel min-h-0 gap-0 overflow-hidden rounded-2xl border-border/70">
+          <Card className="glass-panel editor-shell min-h-0 gap-0 overflow-hidden rounded-2xl border-border/70">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-muted/35 px-4 py-2.5">
               <div className="flex items-center gap-2">
                 <FileCode2 className="size-4 text-[color:var(--golden-main)]" />
                 <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Editor</span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <p>Test Cases:</p>
-                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.simpleScopeArithmetic)}>
-                  simple scope + arithmetic
-                </Button>
-                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.loopProgram)}>
-                  loop
-                </Button>
-                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.ifElseProgram)}>
-                  if else
-                </Button>
-                <Button variant="outline" className="h-7 rounded-lg border-border/70 px-2 text-xs" onClick={() => setCode(EXAMPLE_SNIPPETS.functionProgram)}>
-                  function
-                </Button>
-                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.lexicalError)}>
-                  lexical error
-                </Button>
-                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.syntacticalError)}>
-                  syntactical error
-                </Button>
-                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.semanticError)}>
-                  semantic error
-                </Button>
-                <Button variant="ghost" className="h-7 rounded-lg px-2 text-xs text-[#FF9090]" onClick={() => setCode(EXAMPLE_SNIPPETS.recoveryError)}>
-                  recovery
-                </Button>
+                <p className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <FlaskConical className="size-3.5 text-[color:var(--golden-main)]" />
+                  Test Cases:
+                </p>
+                {TEST_CASES.map((testCase) => {
+                  const isActive = activeTestCase === testCase.id;
+                  const isErrorCase = testCase.kind === 'error';
+
+                  return (
+                    <Button
+                      key={testCase.id}
+                      variant="outline"
+                      className={cn(
+                        'case-pill h-7 rounded-lg border-border/70 px-2 text-xs',
+                        isErrorCase && 'case-pill-error',
+                        isActive && 'case-pill-active',
+                      )}
+                      onClick={() => handleApplyTestCase(testCase.id)}
+                    >
+                      {isErrorCase ? <AlertTriangle className="size-3" /> : <FlaskConical className="size-3" />}
+                      {testCase.label}
+                    </Button>
+                  );
+                })}
               </div>
             </div>
 
             <div className="min-h-0 flex-1">
               <CodeEditor
                 value={code}
-                onChange={setCode}
+                onChange={handleEditorChange}
                 onRunCompiler={handleRunCompiler}
                 errorLines={errorLineSet}
                 editorRef={editorRef}

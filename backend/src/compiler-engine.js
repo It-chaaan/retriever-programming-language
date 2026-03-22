@@ -1287,7 +1287,15 @@ async function compileMultiLine(code, runtimeInput = {}) {
 
   const pushLineResult = (line, result) => {
     results.push({ lineNumber: line.lineNumber, code: line.code, result });
-    if (result.lexer.errors.length > 0 || result.syntax.errors.length > 0 || result.semantic.errors.length > 0) {
+    const hasRecoverableSyntaxErrors = Array.isArray(result.syntax.recoverableErrors)
+      ? result.syntax.recoverableErrors.length > 0
+      : false;
+    if (
+      result.lexer.errors.length > 0 ||
+      result.syntax.errors.length > 0 ||
+      hasRecoverableSyntaxErrors ||
+      result.semantic.errors.length > 0
+    ) {
       hasErrors = true;
     }
     if (result.semantic.outputValue !== undefined && result.semantic.outputValue !== null) {
@@ -1337,8 +1345,8 @@ async function compileMultiLine(code, runtimeInput = {}) {
           syntax: line.syntax,
           semantic: {
             isValid: false,
-            messages: [],
-            errors: ["Skipped semantic analysis due lexer/syntax errors"],
+            messages: ["Skipped semantic analysis due lexer/syntax errors"],
+            errors: [],
             symbolTable: context.symbolTable,
             context,
           },
