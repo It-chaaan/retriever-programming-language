@@ -68,9 +68,20 @@ const EXAMPLE_SNIPPETS = {
     '}',
     'showMessage()!',
   ].join('\n'),
-  lexicalError: 'bone bad := 5 @ !',
-  syntacticalError: 'bone value = 10 !',
-  semanticError: 'bone total := missingVar + 1 !',
+  lexicalError: [
+    'bone @age := 5!',
+    'arf ("Hello " + age)!',
+  ].join('\n'),
+  syntacticalError: [
+    'bone age := 5',
+    'fur name := "Buddy"!',
+    'arf("Hello " + name)!',
+  ].join('\n'),
+  semanticError: [
+    'bone age := "Buddy"!',
+    'fur name := 5!',
+    'arf(age + name)!',
+  ].join('\n'),
   recoveryError: [
     'bone age := 20',
     'bone points := age + 5 @ !',
