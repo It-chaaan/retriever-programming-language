@@ -498,6 +498,10 @@ export default function App() {
   const [outputHeight, setOutputHeight] = useState(248);
   const editorRef                     = useRef<HTMLTextAreaElement>(null);
   const socketRef                     = useRef<Socket | null>(null);
+  const socketServerUrl = (import.meta.env.VITE_SOCKET_URL as string | undefined)?.trim();
+  const socketConnectErrorMessage = socketServerUrl
+    ? 'Cannot connect to compiler socket. Check VITE_SOCKET_URL and ensure Railway backend is running, then refresh the page.'
+    : 'Cannot connect to compiler socket. Start backend and refresh the page.';
 
   // Apply / persist dark class
   useEffect(() => {
@@ -506,7 +510,9 @@ export default function App() {
   }, [isDark]);
 
   useEffect(() => {
-    const socket = io();
+    const socket = socketServerUrl
+      ? io(socketServerUrl, { transports: ['websocket', 'polling'] })
+      : io();
     socketRef.current = socket;
 
     socket.on('request-input', (payload: { name?: string; requestId?: string }) => {
@@ -546,7 +552,7 @@ export default function App() {
     });
 
     socket.on('connect_error', () => {
-      setRequestError('Cannot connect to compiler socket. Start backend and refresh the page.');
+      setRequestError(socketConnectErrorMessage);
       setIsRunning(false);
     });
 
@@ -559,14 +565,14 @@ export default function App() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, []);
+  }, [socketServerUrl, socketConnectErrorMessage]);
 
   const handleRunCompiler = useCallback((overrideInput?: Record<string, string>) => {
     if (!code.trim()) return;
 
     const socket = socketRef.current;
     if (!socket || !socket.connected) {
-      setRequestError('Cannot connect to compiler socket. Start backend and refresh the page.');
+      setRequestError(socketConnectErrorMessage);
       return;
     }
 
@@ -579,7 +585,7 @@ export default function App() {
     setPendingSniffPrompt('');
 
     socket.emit('compile', { code, input: payloadInput });
-  }, [code, runtimeInputMap]);
+  }, [code, runtimeInputMap, socketConnectErrorMessage]);
 
   const handleClear = () => {
     setCode('');
